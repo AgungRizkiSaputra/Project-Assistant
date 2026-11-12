@@ -13,6 +13,25 @@ describe('DiscoveryService & Hybrid Questions', () => {
     const mockMessagesInsert = vi.fn().mockResolvedValue({});
     const mockSupabase = {
       from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'projects') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({
+                  data: {
+                    id: 'proj-123',
+                    title: 'Platform Asisten Ide',
+                    summary: 'Deskripsi ide',
+                    current_phase: 'PHASE_1_IDEA',
+                  },
+                }),
+              }),
+            }),
+            update: vi.fn().mockReturnValue({
+              eq: vi.fn().mockResolvedValue({}),
+            }),
+          };
+        }
         if (table === 'messages') {
           return {
             select: vi.fn().mockReturnValue({
@@ -49,7 +68,8 @@ describe('DiscoveryService & Hybrid Questions', () => {
               status: 'CONFIRMED',
             },
           ],
-          isReadyForPRD: false,
+          canAdvanceToNextPhase: true,
+          isReadyForValidation: false,
         },
         usage: { promptTokens: 10, completionTokens: 15, totalTokens: 25, model: 'mock', provider: 'mock' },
       }),
@@ -78,4 +98,3 @@ describe('DiscoveryService & Hybrid Questions', () => {
     expect(mockMessagesInsert).toHaveBeenCalledTimes(2); // user message and assistant response
   });
 });
-

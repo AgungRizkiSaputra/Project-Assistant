@@ -6,6 +6,16 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+export type DiscoveryPhase =
+  | 'PHASE_1_IDEA'
+  | 'PHASE_2_PRODUCT'
+  | 'PHASE_3_FLOW'
+  | 'PHASE_4_UIUX'
+  | 'PHASE_5_TECH'
+  | 'PHASE_6_SECURITY'
+  | 'PHASE_7_VALIDATION'
+  | 'PHASE_8_PRD_READY';
+
 export type DecisionCategory =
   | 'PRODUCT_OVERVIEW'
   | 'PROBLEM_STATEMENT'
@@ -14,10 +24,14 @@ export type DecisionCategory =
   | 'CORE_FLOW'
   | 'FUNCTIONAL_REQUIREMENTS'
   | 'FEATURE_SPECS'
-  | 'UI_UX_REQUIREMENTS'
+  | 'UI_UX_DESIGN_SYSTEM'
+  | 'PAGE_SPECIFICATIONS'
   | 'DATA_REQUIREMENTS'
   | 'NON_FUNCTIONAL_REQUIREMENTS'
   | 'TECH_STACK'
+  | 'API_SPECIFICATIONS'
+  | 'SECURITY_OWASP'
+  | 'ERROR_EDGE_CASES'
   | 'MVP_SCOPE'
   | 'ACCEPTANCE_CRITERIA'
   | 'FUTURE_ROADMAP'
@@ -59,6 +73,8 @@ export interface ProjectRow {
   title: string;
   summary: string | null;
   status: ProjectStatus;
+  current_phase: DiscoveryPhase;
+  phase_data?: Json;
   active_session_id: string | null;
   is_locked: boolean;
   created_at: string;
@@ -69,6 +85,7 @@ export interface DiscoverySessionRow {
   id: string;
   project_id: string;
   status: DiscoverySessionStatus;
+  current_phase: DiscoveryPhase;
   current_topic: string | null;
   questions_count: number;
   created_at: string;
@@ -154,6 +171,16 @@ export interface AppSettingRow {
   updated_at: string;
 }
 
+export interface PrdValidationRow {
+  id: string;
+  project_id: string;
+  overall_score: number;
+  is_ready_for_generation: boolean;
+  findings: Json;
+  unresolved_gaps: Json;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -227,6 +254,12 @@ export interface Database {
         Row: AppSettingRow;
         Insert: Partial<AppSettingRow> & { setting_key: string; setting_value: Json };
         Update: Partial<AppSettingRow>;
+        Relationships: [];
+      };
+      prd_validations: {
+        Row: PrdValidationRow;
+        Insert: Partial<PrdValidationRow> & { project_id: string; overall_score: number };
+        Update: Partial<PrdValidationRow>;
         Relationships: [];
       };
     };

@@ -8,9 +8,18 @@ import { DiscoveryService } from '../modules/discovery/discovery.service.js';
 import { PrdService } from '../modules/prd/prd.service.js';
 import { ExportService } from '../modules/export/export.service.js';
 import { MemoryService } from '../modules/memory/memory.service.js';
-import { getStartMessage, getHelpMessage, getMainMenuKeyboard } from './views/keyboards.js';
+import { QualityValidatorService } from '../modules/discovery/quality-validator.service.js';
+import { getPhaseMetadata } from '../modules/discovery/phases.config.js';
+import {
+  getStartMessage,
+  getHelpMessage,
+  getMainMenuKeyboard,
+  getDiscoveryPhaseKeyboard,
+  getInteractiveQuestionKeyboard,
+  PHASE_NUM_TO_KEY,
+} from './views/keyboards.js';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { Database } from '../db/types.js';
+import { Database, DiscoveryPhase } from '../db/types.js';
 import { logger } from '../config/logger.js';
 
 export function createTelegramBot(
@@ -22,7 +31,8 @@ export function createTelegramBot(
   discoveryService: DiscoveryService,
   prdService: PrdService,
   exportService: ExportService,
-  memoryService: MemoryService
+  memoryService: MemoryService,
+  validatorService: QualityValidatorService
 ) {
   const bot = new Bot<AppContext>(token);
 
@@ -31,6 +41,57 @@ export function createTelegramBot(
 
   // 2. Auth guard middleware
   bot.use(authMiddleware(authService));
+
+  // Helper untuk mengeksekusi giliran interaktif discovery
+  async function triggerDiscoveryTurn(ctx: AppContext, project: any, text: string) {
+    if (project.is_locked) {
+      await ctx.reply('⏳ AI sedang memproses respons arsitektur sebelumnya. Mohon tunggu sejenak...');
+      return;
+    }
+
+    await projectsService.setProjectLock(project.id, true);
+    await ctx.replyWithChatAction('typing');
+
+    try {
+      const reply = await discoveryService.processUserMessage(
+        project.id,
+        project.active_session_id,
+        text
+      );
+
+      const phaseMeta = getPhaseMetadata(reply.phase);
+      const header = `📍 *[Fase ${reply.phaseNumber}/8: ${phaseMeta.shortName}]*\n\n`;
+
+      if (reply.question && reply.question.options && reply.question.options.length > 0) {
+        const qText = `${header}${reply.assistantResponse}\n\n*Pertanyaan Panduan:*\n❓ *${reply.question.question}*` +
+          (reply.question.multiSelect ? '\n_(Pilih satu atau lebih opsi di bawah, lalu klik Konfirmasi)_' : '');
+        const qKb = getInteractiveQuestionKeyboard(project.id, reply.question);
+
+        await ctx.reply(qText, {
+          parse_mode: 'Markdown',
+          reply_markup: qKb,
+        });
+      } else {
+        const kb = getDiscoveryPhaseKeyboard(
+          project.id,
+          reply.phase,
+          reply.canAdvanceToNextPhase,
+          reply.isReadyForValidation
+        );
+        kb.row().text('📑 Kelola PRD Proyek', `list_project_prds_${project.id}`);
+
+        await ctx.reply(header + reply.assistantResponse, {
+          parse_mode: 'Markdown',
+          reply_markup: kb,
+        });
+      }
+    } catch (err: any) {
+      logger.error({ err, projectId: project.id }, 'Error during discovery conversation');
+      await ctx.reply(`⚠️ Terjadi kendala saat memproses percakapan: ${err.message}`);
+    } finally {
+      await projectsService.setProjectLock(project.id, false);
+    }
+  }
 
   // Helper untuk menampilkan daftar ide
   async function showIdeas(ctx: AppContext) {
@@ -86,8 +147,10 @@ export function createTelegramBot(
     const keyboard = new InlineKeyboard();
 
     projects.slice(0, 8).forEach((p, idx) => {
-      text += `${idx + 1}. *${p.title}*\n   _Fase: ${p.status}_\n\n`;
-      keyboard.text(`🚀 #${idx + 1} ${p.title.slice(0, 15)}...`, `select_project_${p.id}`);
+      const phaseMeta = getPhaseMetadata((p as any).current_phase || 'PHASE_1_IDEA');
+      text += `${idx + 1}. *${p.title}*\n   _Fase: [${phaseMeta.number}/8] ${phaseMeta.shortName}_\n\n`;
+      keyboard.text(`🚀 #${idx + 1} ${p.title.slice(0, 12)}...`, `select_project_${p.id}`);
+      keyboard.text(`🗑️`, `confirm_del_proj_${p.id}`);
       keyboard.row();
     });
 
@@ -99,10 +162,52 @@ export function createTelegramBot(
     });
   }
 
+  // Helper untuk menampilkan daftar PRD dokumen suatu proyek
+  async function showProjectPrds(ctx: AppContext, projectId: string) {
+    const user = ctx.dbUser!;
+    const project = await projectsService.getProjectById(projectId, user.id);
+    if (!project) {
+      await ctx.reply('⚠️ Proyek tidak ditemukan.');
+      return;
+    }
+
+    const versions = await prdService.listVersions(projectId);
+    if (versions.length === 0) {
+      await ctx.reply(
+        `📄 *Dokumen PRD: ${project.title}*\n\nBelum ada versi PRD yang dibuat untuk proyek ini.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard()
+            .text('📑 Generate PRD Sekarang', `generate_prd_${projectId}`)
+            .row()
+            .text('🔙 Kembali ke Proyek', `select_project_${projectId}`),
+        }
+      );
+      return;
+    }
+
+    let text = `📑 *Daftar Versi PRD Proyek:* *${project.title}* (${versions.length} versi)\n\n`;
+    const keyboard = new InlineKeyboard();
+
+    versions.forEach((v, idx) => {
+      text += `${idx + 1}. *v${v.version_number}.0* — ${v.title}\n   _Changelog: ${v.changelog_summary || 'Rilis versi'}_\n\n`;
+      keyboard.text(`📥 Unduh v${v.version_number}`, `export_md_${v.id}`);
+      keyboard.text(`🗑️ Hapus v${v.version_number}`, `confirm_del_prdv_${v.id}`);
+      keyboard.row();
+    });
+
+    keyboard.text('🔄 Generate Versi Baru', `generate_prd_${projectId}`).row();
+    keyboard.text('🔙 Detail Proyek', `select_project_${projectId}`).text('🔙 Menu Utama', 'cmd_menu');
+
+    await ctx.reply(text, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    });
+  }
+
   // Helper untuk pengaturan
   async function showSettings(ctx: AppContext) {
     const user = ctx.dbUser!;
-    // Ambil preferensi user jika ada
     const { data: setting } = await (supabase as any)
       .from('app_settings')
       .select('setting_value')
@@ -119,14 +224,52 @@ export function createTelegramBot(
       .text('🔙 Menu Utama', 'cmd_menu');
 
     await ctx.reply(
-      `⚙️ *Pengaturan Asisten Produk*\n\n` +
+      `⚙️ *Pengaturan AI Product Architect*\n\n` +
       `*Engine AI Aktif:* \`${currentProvider}\`\n\n` +
-      `Pilih engine model yang ingin Anda gunakan untuk analisa discovery dan penulisan PRD:`,
+      `Pilih engine model yang ingin Anda gunakan untuk discovery terarah dan penulisan PRD:`,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
       }
     );
+  }
+
+  // Helper untuk validasi kesiapan
+  async function runValidation(ctx: AppContext, projectId: string) {
+    const statusMsg = await ctx.reply('🔍 *Menjalankan Pre-Flight Quality Check (10 Dimensi)...* Mohon tunggu sebentar.', {
+      parse_mode: 'Markdown',
+    });
+
+    try {
+      const report = await validatorService.validateProjectReadiness(projectId);
+      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
+
+      const scoreEmoji = report.overallScore >= 80 ? '🟢' : report.overallScore >= 60 ? '🟡' : '🔴';
+      let reportText = `${scoreEmoji} *Audit Kesiapan PRD: Skor ${report.overallScore}/100*\n\n`;
+      reportText += `*Status:* ${report.isReadyForGeneration ? '✅ Siap Generate PRD Final' : '⚠️ Perlu Pelengkap Sebelum Final'}\n\n`;
+      reportText += `${report.summaryMessage}\n\n`;
+
+      if (report.unresolvedGaps && report.unresolvedGaps.length > 0) {
+        reportText += `*Celah yang Masih Terbuka:*\n`;
+        report.unresolvedGaps.forEach((g) => (reportText += `• ${g}\n`));
+        reportText += `\n`;
+      }
+
+      const kb = new InlineKeyboard();
+      if (report.isReadyForGeneration || report.overallScore >= 65) {
+        kb.text('📑 Generate PRD Final (29 Seksi)', `generate_prd_${projectId}`).row();
+      }
+      kb.text('💬 Lanjutkan Tanya-Jawab', `select_project_${projectId}`)
+        .text('🔙 Menu Utama', 'cmd_menu');
+
+      await ctx.reply(reportText, {
+        parse_mode: 'Markdown',
+        reply_markup: kb,
+      });
+    } catch (err: any) {
+      logger.error({ err, projectId }, 'Validation execution error');
+      await ctx.reply(`❌ Kendala saat menjalankan audit: ${err.message}`);
+    }
   }
 
   // -------------------------------------------------------------
@@ -179,7 +322,7 @@ export function createTelegramBot(
       .text('🔙 Menu Utama', 'cmd_menu');
 
     await ctx.reply(
-      `✅ *Ide Berhasil Disimpan ke Inbox!*\n\n*Judul:* ${idea.title}\n*Status:* 📥 Inbox\n\nIngin langsung mengembangkan ide ini menjadi konsep produk & PRD?`,
+      `✅ *Ide Berhasil Disimpan ke Inbox!*\n\n*Judul:* ${idea.title}\n*Status:* 📥 Inbox\n\nIngin langsung mengembangkan ide ini menjadi arsitektur produk & PRD?`,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
@@ -219,25 +362,44 @@ export function createTelegramBot(
       return;
     }
 
-    const decisions = await memoryService.getDecisionsByProject(project.id);
-    const confirmedCount = decisions.filter((d) => d.status === 'CONFIRMED').length;
+    const currentPhase = (project as any).current_phase || 'PHASE_1_IDEA';
+    const phaseMeta = getPhaseMetadata(currentPhase);
+    const activeQuestion = (project as any).phase_data?.activeQuestion;
 
-    const keyboard = new InlineKeyboard()
-      .text('📑 Buat PRD (.md)', `generate_prd_${project.id}`)
-      .row()
-      .text('🔍 Review Keputusan', `review_project_${project.id}`)
-      .text('🔙 Menu Utama', 'cmd_menu');
+    if (activeQuestion && activeQuestion.options && activeQuestion.options.length > 0) {
+      const header = `🎯 *Proyek: ${project.title}*\n📍 *[Fase ${phaseMeta.number}/8: ${phaseMeta.shortName}]*\n\n`;
+      const qText = `${header}*Pertanyaan Panduan:*\n❓ *${activeQuestion.question}*` +
+        (activeQuestion.multiSelect ? '\n_(Pilih satu atau lebih opsi di bawah, lalu klik Konfirmasi)_' : '');
+      const qKb = getInteractiveQuestionKeyboard(project.id, activeQuestion);
 
-    await ctx.reply(
-      `💬 *Melanjutkan Discovery: ${project.title}*\n\n` +
-      `*Status Proyek:* \`${project.status}\`\n` +
-      `*Keputusan Terkumpul:* ${confirmedCount} poin\n\n` +
-      `Ketik pesan apa saja langsung di chat ini untuk melanjutkan diskusi dengan AI Product Manager, atau tekan tombol di bawah jika siap membuat PRD.`,
-      {
+      await ctx.reply(qText, {
         parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      }
+        reply_markup: qKb,
+      });
+      return;
+    }
+
+    await ctx.reply(`🎯 *Melanjutkan Sesi: ${project.title}*...`);
+    await triggerDiscoveryTurn(
+      ctx,
+      project,
+      `Halo, mari lanjutkan pembahasan pada Fase ${phaseMeta.number}: ${phaseMeta.title}. Mohon ajukan pertanyaan panduan interaktif beserta pilihannya.`
     );
+  });
+
+  // -------------------------------------------------------------
+  // Command: /review
+  // -------------------------------------------------------------
+  bot.command('review', async (ctx) => {
+    const user = ctx.dbUser!;
+    const project = await projectsService.getActiveProject(user.id);
+
+    if (!project) {
+      await ctx.reply('⚠️ Tidak ada proyek aktif untuk direview. Pilih proyek melalui `/projects`.');
+      return;
+    }
+
+    await runValidation(ctx, project.id);
   });
 
   // -------------------------------------------------------------
@@ -254,85 +416,7 @@ export function createTelegramBot(
       return;
     }
 
-    const prdData = await prdService.getLatestPRD(project.id);
-    if (!prdData || !prdData.version) {
-      const keyboard = new InlineKeyboard()
-        .text('📑 Generate PRD Sekarang', `generate_prd_${project.id}`)
-        .row()
-        .text('🔙 Menu', 'cmd_menu');
-
-      await ctx.reply(`📄 Belum ada PRD untuk proyek *${project.title}*. Klik tombol di bawah untuk menyusunnya.`, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      });
-      return;
-    }
-
-    const version = prdData.version;
-    const keyboard = new InlineKeyboard()
-      .text('📥 Unduh Dokumen (.md)', `export_md_${version.id}`)
-      .row()
-      .text('🔄 Revisi / Generate Ulang', `generate_prd_${project.id}`)
-      .text('🔙 Menu Utama', 'cmd_menu');
-
-    await ctx.reply(
-      `📄 *Dokumen PRD Terakhir:*\n` +
-      `*Proyek:* ${project.title}\n` +
-      `*Versi:* v${version.version_number}.0\n` +
-      `*Changelog:* ${version.changelog_summary || 'Rilis awal'}\n\n` +
-      `Klik tombol di bawah untuk mengunduh dokumen Markdown (.md):`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      }
-    );
-  });
-
-  // -------------------------------------------------------------
-  // Command: /review
-  // -------------------------------------------------------------
-  bot.command('review', async (ctx) => {
-    const user = ctx.dbUser!;
-    const project = await projectsService.getActiveProject(user.id);
-
-    if (!project) {
-      await ctx.reply('⚠️ Tidak ada proyek aktif untuk direview. Pilih proyek melalui `/projects`.');
-      return;
-    }
-
-    const decisions = await memoryService.getDecisionsByProject(project.id);
-    const confirmed = decisions.filter((d) => d.status === 'CONFIRMED');
-    const unknown = decisions.filter((d) => d.status === 'UNKNOWN');
-    const suggested = decisions.filter((d) => d.status === 'SUGGESTED');
-
-    let reviewText = `🔍 *Evaluasi Kematangan Produk: ${project.title}*\n\n`;
-    if (confirmed.length > 0) {
-      reviewText += `✅ *Keputusan Terkonfirmasi (${confirmed.length}):*\n`;
-      confirmed.slice(0, 6).forEach((c) => (reviewText += `• [${c.category}] ${c.statement}\n`));
-    } else {
-      reviewText += `_Belum ada keputusan yang terkonfirmasi._\n`;
-    }
-
-    if (unknown.length > 0) {
-      reviewText += `\n❓ *Informasi Belum Lengkap (${unknown.length}):*\n`;
-      unknown.slice(0, 4).forEach((u) => (reviewText += `• ${u.statement}\n`));
-    }
-
-    if (suggested.length > 0) {
-      reviewText += `\n💡 *Rekomendasi AI Menunggu Persetujuan (${suggested.length}):*\n`;
-      suggested.slice(0, 4).forEach((s) => (reviewText += `• ${s.statement}\n`));
-    }
-
-    const keyboard = new InlineKeyboard()
-      .text('💬 Lanjutkan Tanya Jawab', `select_project_${project.id}`)
-      .text('📑 Buat PRD (.md)', `generate_prd_${project.id}`)
-      .row()
-      .text('🔙 Menu Utama', 'cmd_menu');
-
-    await ctx.reply(reviewText, {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard,
-    });
+    await showProjectPrds(ctx, project.id);
   });
 
   // -------------------------------------------------------------
@@ -383,6 +467,14 @@ export function createTelegramBot(
       return;
     }
 
+    if (data === 'cmd_new_idea') {
+      await ctx.reply(
+        '💡 *Catat Ide Baru*\n\nSilakan ketikkan ide produk atau aplikasi Anda langsung di chat ini (atau gunakan `/new <deskripsi ide>`).',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
     if (data === 'cmd_list_prds') {
       const project = await projectsService.getActiveProject(user.id);
       if (!project) {
@@ -391,43 +483,13 @@ export function createTelegramBot(
         });
         return;
       }
-      const prdData = await prdService.getLatestPRD(project.id);
-      if (!prdData || !prdData.version) {
-        await ctx.reply(
-          `📄 Belum ada PRD untuk proyek *${project.title}*.\n\nIngin generate PRD sekarang?`,
-          {
-            parse_mode: 'Markdown',
-            reply_markup: new InlineKeyboard()
-              .text('📑 Generate PRD (.md)', `generate_prd_${project.id}`)
-              .row()
-              .text('🔙 Menu Utama', 'cmd_menu'),
-          }
-        );
-        return;
-      }
-      const version = prdData.version;
-      await ctx.reply(
-        `📄 *Dokumen PRD Proyek:* ${project.title}\n` +
-        `*Versi Terakhir:* v${version.version_number}.0\n` +
-        `*Changelog:* ${version.changelog_summary || 'Rilis awal'}\n\n` +
-        `Klik tombol di bawah untuk langsung mengunduh file Markdown (.md):`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: new InlineKeyboard()
-            .text('📥 Unduh File Markdown (.md)', `export_md_${version.id}`)
-            .row()
-            .text('🔄 Generate / Revisi PRD', `generate_prd_${project.id}`)
-            .text('🔙 Menu', 'cmd_menu'),
-        }
-      );
+      await showProjectPrds(ctx, project.id);
       return;
     }
 
-    if (data === 'cmd_new_idea') {
-      await ctx.reply(
-        '💡 *Catat Ide Baru*\n\nSilakan ketikkan ide produk atau aplikasi Anda langsung di chat ini (atau gunakan `/new <deskripsi ide>`).',
-        { parse_mode: 'Markdown' }
-      );
+    if (data.startsWith('list_project_prds_')) {
+      const projectId = data.replace('list_project_prds_', '');
+      await showProjectPrds(ctx, projectId);
       return;
     }
 
@@ -465,6 +527,7 @@ export function createTelegramBot(
       if (idea.status !== 'CONVERTED_TO_PROJECT') {
         kb.text('🚀 Jadikan Proyek', `convert_idea_${idea.id}`).row();
       }
+      kb.text('🗑️ Hapus Ide Ini', `confirm_del_idea_${idea.id}`).row();
       kb.text('📥 Kembali ke Inbox', 'cmd_list_ideas').text('🔙 Menu', 'cmd_menu');
 
       await ctx.reply(
@@ -474,6 +537,46 @@ export function createTelegramBot(
         `*Dicatat pada:* ${new Date(idea.created_at).toLocaleDateString('id-ID')}`,
         { parse_mode: 'Markdown', reply_markup: kb }
       );
+      return;
+    }
+
+    // Konfirmasi Hapus Ide
+    if (data.startsWith('confirm_del_idea_')) {
+      const ideaId = data.replace('confirm_del_idea_', '');
+      const idea = await ideasService.getIdeaById(ideaId, user.id);
+      if (!idea) {
+        await ctx.reply('Ide tidak ditemukan atau sudah dihapus.');
+        return;
+      }
+
+      const kb = new InlineKeyboard()
+        .text('⚠️ Ya, Hapus Ide', `exec_del_idea_${idea.id}`)
+        .text('❌ Batal', `view_idea_${idea.id}`);
+
+      await ctx.reply(
+        `⚠️ *Konfirmasi Penghapusan Ide*\n\n` +
+        `*Nama Ide:* ${idea.title}\n` +
+        `*Status:* ${idea.status}\n\n` +
+        `*Dampak:* Ide ini akan dihapus permanen dari Inbox Anda. Jika ide sudah pernah dijadikan proyek, data proyek tetap aman.\n\n` +
+        `Apakah Anda yakin ingin menghapus ide ini?`,
+        { parse_mode: 'Markdown', reply_markup: kb }
+      );
+      return;
+    }
+
+    // Eksekusi Hapus Ide
+    if (data.startsWith('exec_del_idea_')) {
+      const ideaId = data.replace('exec_del_idea_', '');
+      try {
+        const res = await ideasService.deleteIdea(ideaId, user.id);
+        await ctx.reply(`🗑️ *Ide "${res.ideaTitle}" berhasil dihapus secara permanen.*`, {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard().text('📥 Kembali ke Inbox', 'cmd_list_ideas').text('🔙 Menu Utama', 'cmd_menu'),
+        });
+      } catch (err: any) {
+        logger.error({ err, ideaId }, 'Failed to execute idea deletion');
+        await ctx.reply(`❌ Gagal menghapus ide: ${err.message}`);
+      }
       return;
     }
 
@@ -505,7 +608,7 @@ export function createTelegramBot(
         );
       } else {
         await ctx.reply(
-          `🚀 *Proyek Berhasil Dibuat: ${project.title}*\n\nSesi discovery terstruktur telah dibuka. Mari matangkan konsep produknya!`,
+          `🚀 *Proyek Berhasil Dibuat: ${project.title}*\n\nMemulai *Fase 1: Idea Discovery*. Mari matangkan konsep produknya!`,
           { parse_mode: 'Markdown', reply_markup: kb }
         );
       }
@@ -515,53 +618,220 @@ export function createTelegramBot(
     // Pilih Proyek Aktif
     if (data.startsWith('select_project_')) {
       const projectId = data.replace('select_project_', '');
+      try {
+        const project = await projectsService.getProjectById(projectId, user.id);
+        if (!project) {
+          await ctx.reply('⚠️ Proyek tidak ditemukan.');
+          return;
+        }
+
+        // Tandai proyek ini sebagai aktif dengan memperbarui updated_at
+        await (supabase as any)
+          .from('projects')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', project.id);
+
+        const activeQuestion = (project as any).phase_data?.activeQuestion;
+
+        // Jika sudah ada pertanyaan interaktif yang tersimpan, langsung tampilkan opsinya
+        if (activeQuestion && activeQuestion.options && activeQuestion.options.length > 0) {
+          const currentPhase = (project as any).current_phase || 'PHASE_1_IDEA';
+          const phaseMeta = getPhaseMetadata(currentPhase);
+          const header = `🎯 *Proyek: ${project.title}*\n📍 *[Fase ${phaseMeta.number}/8: ${phaseMeta.shortName}]*\n\n`;
+          const qText = `${header}*Pertanyaan Panduan:*\n❓ *${activeQuestion.question}*` +
+            (activeQuestion.multiSelect ? '\n_(Pilih satu atau lebih opsi di bawah, lalu klik Konfirmasi)_' : '');
+          const qKb = getInteractiveQuestionKeyboard(project.id, activeQuestion);
+
+          await ctx.reply(qText, {
+            parse_mode: 'Markdown',
+            reply_markup: qKb,
+          });
+          return;
+        }
+
+        // Jika belum ada pertanyaan aktif untuk fase ini, otomatis picu AI untuk membuatkan pertanyaan panduan
+        await ctx.reply(`🎯 *Membuka Sesi Discovery: ${project.title}*...`);
+        const currentPhase = (project as any).current_phase || 'PHASE_1_IDEA';
+        const phaseMeta = getPhaseMetadata(currentPhase);
+        await triggerDiscoveryTurn(
+          ctx,
+          project,
+          `Halo, saya ingin melanjutkan pembahasan pada Fase ${phaseMeta.number}: ${phaseMeta.title}. Mohon ajukan pertanyaan panduan interaktif pertama untuk fase ini.`
+        );
+      } catch (err: any) {
+        logger.error({ err, projectId }, 'Failed in select_project_ handler');
+        await ctx.reply(`❌ Terjadi kendala saat membuka sesi discovery: ${err.message}`);
+      }
+      return;
+    }
+
+    // Konfirmasi Hapus Proyek
+    if (data.startsWith('confirm_del_proj_')) {
+      const projectId = data.replace('confirm_del_proj_', '');
       const project = await projectsService.getProjectById(projectId, user.id);
       if (!project) {
         await ctx.reply('Proyek tidak ditemukan.');
         return;
       }
 
+      const kb = new InlineKeyboard()
+        .text('⚠️ Ya, Hapus Seluruh Proyek', `exec_del_proj_${project.id}`)
+        .row()
+        .text('❌ Batal', `select_project_${project.id}`);
+
       await ctx.reply(
-        `🎯 *Proyek Aktif: ${project.title}*\n\nKetik pesan Anda sekarang untuk berdiskusi dengan AI Product Manager.`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: new InlineKeyboard()
-            .text('📑 Buat PRD (.md)', `generate_prd_${project.id}`)
-            .text('🔍 Review', `review_project_${project.id}`)
-            .row()
-            .text('🔙 Menu Utama', 'cmd_menu'),
-        }
+        `🚨 *Konfirmasi Penghapusan Proyek*\n\n` +
+        `*Nama Proyek:* ${project.title}\n` +
+        `*Fase:* ${(project as any).current_phase || 'DISCOVERY'}\n\n` +
+        `*Dampak Penghapusan:*\n` +
+        `• Seluruh percakapan discovery pada proyek ini akan dihapus.\n` +
+        `• Structured memory dan seluruh riwayat dokumen PRD proyek ini akan dibersihkan.\n` +
+        `• Data proyek lain tidak akan terpengaruh.\n\n` +
+        `Apakah Anda yakin ingin menghapus proyek ini secara permanen?`,
+        { parse_mode: 'Markdown', reply_markup: kb }
       );
       return;
     }
 
-    // Review Proyek Tertentu
-    if (data.startsWith('review_project_')) {
-      const projectId = data.replace('review_project_', '');
-      const decisions = await memoryService.getDecisionsByProject(projectId);
-      const confirmed = decisions.filter((d) => d.status === 'CONFIRMED');
-
-      let text = `🔍 *Review Keputusan Proyek*\n\n`;
-      if (confirmed.length > 0) {
-        text += `✅ *Keputusan Terkonfirmasi (${confirmed.length}):*\n`;
-        confirmed.slice(0, 6).forEach((c) => (text += `• ${c.statement}\n`));
-      } else {
-        text += `_Belum ada keputusan yang terkonfirmasi. Silakan berdiskusi di chat._\n`;
+    // Eksekusi Hapus Proyek
+    if (data.startsWith('exec_del_proj_')) {
+      const projectId = data.replace('exec_del_proj_', '');
+      try {
+        const res = await projectsService.deleteProject(projectId, user.id);
+        await ctx.reply(`🗑️ *Proyek "${res.projectTitle}" beserta seluruh sesi dan dokumennya berhasil dihapus secara bersih.*`, {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard().text('🚀 Daftar Proyek', 'cmd_list_projects').text('🔙 Menu Utama', 'cmd_menu'),
+        });
+      } catch (err: any) {
+        logger.error({ err, projectId }, 'Failed executing project deletion');
+        await ctx.reply(`❌ Gagal menghapus proyek: ${err.message}`);
       }
-
-      await ctx.reply(text, {
-        parse_mode: 'Markdown',
-        reply_markup: new InlineKeyboard()
-          .text('📑 Buat PRD (.md)', `generate_prd_${projectId}`)
-          .text('🔙 Menu', 'cmd_menu'),
-      });
       return;
     }
 
-    // Generate PRD
-    if (data.startsWith('generate_prd_')) {
-      const projectId = data.replace('generate_prd_', '');
-      const statusMsg = await ctx.reply('⏳ *Sedang menyusun PRD 16 seksi standar industri...* Mohon tunggu beberapa detik.', {
+    // Konfirmasi Hapus Dokumen PRD
+    if (data.startsWith('confirm_del_prdv_')) {
+      const versionId = data.replace('confirm_del_prdv_', '');
+
+      const { data: version } = await (supabase as any)
+        .from('prd_versions')
+        .select('*, prd_documents(project_id)')
+        .eq('id', versionId)
+        .maybeSingle();
+
+      if (!version) {
+        await ctx.reply('Versi PRD tidak ditemukan atau sudah dihapus.');
+        return;
+      }
+
+      const projectId = version.prd_documents?.project_id;
+      const kb = new InlineKeyboard()
+        .text('⚠️ Ya, Hapus Versi PRD Ini', `exec_del_prdv_${versionId}`)
+        .row()
+        .text('❌ Batal', projectId ? `list_project_prds_${projectId}` : 'cmd_list_projects');
+
+      await ctx.reply(
+        `⚠️ *Konfirmasi Hapus Versi PRD*\n\n` +
+        `*Dokumen:* ${version.title}\n` +
+        `*Versi:* v${version.version_number}.0\n\n` +
+        `*Dampak:* Hanya file dan versi PRD ini yang dihapus. Proyek induk, sesi tanya-jawab, dan versi PRD lainnya *tetap aman*.\n\n` +
+        `Yakin ingin menghapus dokumen PRD ini?`,
+        { parse_mode: 'Markdown', reply_markup: kb }
+      );
+      return;
+    }
+
+    // Eksekusi Hapus Dokumen PRD
+    if (data.startsWith('exec_del_prdv_')) {
+      const versionId = data.replace('exec_del_prdv_', '');
+
+      try {
+        const { data: version } = await (supabase as any)
+          .from('prd_versions')
+          .select('*, prd_documents(project_id)')
+          .eq('id', versionId)
+          .maybeSingle();
+
+        const projectId = version?.prd_documents?.project_id;
+        if (!projectId) {
+          throw new Error('Proyek induk dari versi PRD ini tidak ditemukan.');
+        }
+
+        const res = await prdService.deletePRDVersion(versionId, projectId, user.id);
+        await ctx.reply(
+          `🗑️ *Dokumen "${res.versionTitle}" berhasil dihapus.*\nSisa versi PRD aktif: ${res.remainingVersionsCount}`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: new InlineKeyboard()
+              .text('📑 Buka Daftar PRD Proyek', `list_project_prds_${projectId}`)
+              .row()
+              .text('🔙 Menu Utama', 'cmd_menu'),
+          }
+        );
+      } catch (err: any) {
+        logger.error({ err, versionId }, 'Failed executing PRD version deletion');
+        await ctx.reply(`❌ Gagal menghapus dokumen PRD: ${err.message}`);
+      }
+      return;
+    }
+
+    // Pindah Fase Discovery
+    if (data.startsWith('adv_') || data.startsWith('advance_phase_')) {
+      let projectId: string;
+      let targetPhase: DiscoveryPhase;
+
+      if (data.startsWith('adv_')) {
+        const parts = data.replace('adv_', '').split('_');
+        projectId = parts[0];
+        const num = parseInt(parts[1], 10);
+        targetPhase = PHASE_NUM_TO_KEY[num] || 'PHASE_1_IDEA';
+      } else {
+        const parts = data.replace('advance_phase_', '').split('_');
+        projectId = parts[0];
+        targetPhase = ('PHASE_' + parts.slice(1).join('_')) as DiscoveryPhase;
+      }
+
+      await discoveryService.advancePhase(projectId, targetPhase);
+      const meta = getPhaseMetadata(targetPhase);
+      const project = await projectsService.getProjectById(projectId, user.id);
+
+      await ctx.reply(
+        `🔄 *Berpindah ke Fase ${meta.number}/8: ${meta.title}*\n\n` +
+        `*Fokus Tahap Ini:*\n${meta.description}\n\n` +
+        `_Sedang menyiapkan opsi panduan interaktif..._`,
+        {
+          parse_mode: 'Markdown',
+        }
+      );
+
+      // Otomatis picu AI untuk menyajikan pertanyaan panduan pertama di fase baru ini
+      if (project) {
+        await triggerDiscoveryTurn(
+          ctx,
+          project,
+          `Saya baru saja berpindah ke Fase ${meta.number}: ${meta.title}. Tolong ajukan pertanyaan panduan interaktif pertama beserta pilihan opsi untuk fase ini.`
+        );
+      }
+      return;
+    }
+
+    // Validasi Kesiapan Proyek
+    if (data.startsWith('val_ready_') || data.startsWith('validate_readiness_') || data.startsWith('audit_project_') || data.startsWith('audit_')) {
+      const projectId = data
+        .replace('val_ready_', '')
+        .replace('validate_readiness_', '')
+        .replace('audit_project_', '')
+        .replace('audit_', '');
+      await runValidation(ctx, projectId);
+      return;
+    }
+
+    // Generate PRD (29 Seksi)
+    if (data.startsWith('gen_prd_') || data.startsWith('generate_prd_')) {
+      const projectId = data.startsWith('gen_prd_')
+        ? data.replace('gen_prd_', '')
+        : data.replace('generate_prd_', '');
+      const statusMsg = await ctx.reply('⏳ *Sedang menyusun PRD 29 seksi standar industri...* Menulis arsitektur, skema DB, API, dan security OWASP. Mohon tunggu sekitar 20-30 detik.', {
         parse_mode: 'Markdown',
       });
 
@@ -574,15 +844,16 @@ export function createTelegramBot(
         if (versionId) {
           kb.text('📥 Unduh File PRD (.md)', `export_md_${versionId}`).row();
         }
+        kb.text('📑 Daftar Semua Versi PRD', `list_project_prds_${projectId}`).row();
         kb.text('🔙 Menu Utama', 'cmd_menu');
 
         await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
         await ctx.reply(
-          `✅ *PRD v${prd.versionNumber}.0 Berhasil Dibuat!*\n\n*Ringkasan Perubahan:* ${prd.changelogSummary}\n\nSilakan unduh dokumen Markdown (.md) Anda di bawah:`,
+          `✅ *PRD v${prd.versionNumber}.0 (29 Seksi Lengkap) Berhasil Disusun!*\n\n*Ringkasan Perubahan:* ${prd.changelogSummary}\n\nDokumen sudah siap digunakan developer dan AI coding agents. Unduh file Markdown (.md) Anda di bawah:`,
           { parse_mode: 'Markdown', reply_markup: kb }
         );
       } catch (err: any) {
-        logger.error({ err, projectId }, 'Failed to generate PRD');
+        logger.error({ err, projectId }, 'Failed to generate 29-section PRD');
         await ctx.reply(`❌ Terjadi kendala saat menyusun PRD: ${err.message}`);
       }
       return;
@@ -609,9 +880,188 @@ export function createTelegramBot(
       );
 
       await ctx.replyWithDocument(new InputFile(res.filePath, res.fileName), {
-        caption: `📄 Dokumen PRD: *${version.title}*\nFormat: Markdown (.md)`,
+        caption: `📄 Dokumen PRD: *${version.title}*\nFormat: Markdown (.md) 29 Seksi`,
         parse_mode: 'Markdown',
       });
+      return;
+    }
+
+    // -------------------------------------------------------------
+    // Interactive Guided Discovery Callbacks (dq_)
+    // -------------------------------------------------------------
+
+    // Opsi Dipilih (Single / Multi-Select)
+    if (data.startsWith('dq_opt_')) {
+      const parts = data.replace('dq_opt_', '').split('_');
+      const projectId = parts[0];
+      const optIdx = parseInt(parts[1], 10);
+
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const activeQuestion = (project as any).phase_data?.activeQuestion;
+      if (!activeQuestion || !activeQuestion.options || !activeQuestion.options[optIdx]) {
+        await ctx.reply('⚠️ Pertanyaan ini sudah selesai atau telah diperbarui.');
+        return;
+      }
+
+      const chosenOption = activeQuestion.options[optIdx];
+      let selectedIds: string[] = activeQuestion.selectedOptionIds || [];
+
+      if (activeQuestion.multiSelect) {
+        if (selectedIds.includes(chosenOption.id)) {
+          selectedIds = selectedIds.filter((id) => id !== chosenOption.id);
+        } else {
+          selectedIds.push(chosenOption.id);
+        }
+        activeQuestion.selectedOptionIds = selectedIds;
+
+        await (supabase as any)
+          .from('projects')
+          .update({
+            phase_data: {
+              ...(project as any).phase_data,
+              activeQuestion,
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', projectId);
+
+        const newKb = getInteractiveQuestionKeyboard(projectId, activeQuestion);
+        await ctx.editMessageReplyMarkup({ reply_markup: newKb }).catch(() => {});
+        return;
+      }
+
+      // Single select: langsung kirimkan sebagai jawaban pengguna
+      const answerText = `Saya memilih: ${chosenOption.label}`;
+      await ctx.reply(`👉 *Jawaban Anda:* ${chosenOption.label}`, { parse_mode: 'Markdown' });
+
+      // Lanjutkan alur discovery dengan teks jawaban ini
+      await triggerDiscoveryTurn(ctx, project, answerText);
+      return;
+    }
+
+    // Konfirmasi Pilihan Multi-Select
+    if (data.startsWith('dq_cf_')) {
+      const projectId = data.replace('dq_cf_', '');
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const activeQuestion = (project as any).phase_data?.activeQuestion;
+      const selectedIds: string[] = activeQuestion?.selectedOptionIds || [];
+
+      if (selectedIds.length === 0) {
+        await ctx.reply('⚠️ Silakan pilih minimal satu opsi di atas sebelum konfirmasi, atau gunakan "Ketik Sendiri" / "Saya Belum Tahu".');
+        return;
+      }
+
+      const selectedLabels = activeQuestion.options
+        .filter((o: any) => selectedIds.includes(o.id))
+        .map((o: any) => o.label);
+
+      const answerText = `Pilihan saya:\n- ${selectedLabels.join('\n- ')}`;
+      await ctx.reply(`👉 *Jawaban Anda (${selectedLabels.length} opsi terpilih):*\n• ${selectedLabels.join('\n• ')}`, {
+        parse_mode: 'Markdown',
+      });
+
+      await triggerDiscoveryTurn(ctx, project, answerText);
+      return;
+    }
+
+    // Permintaan Rekomendasi AI
+    if (data.startsWith('dq_rec_')) {
+      const projectId = data.replace('dq_rec_', '');
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const activeQuestion = (project as any).phase_data?.activeQuestion;
+      const recommendation = activeQuestion?.aiRecommendation || 'Gunakan opsi default standar industri yang paling efisien untuk MVP.';
+
+      await ctx.reply(
+        `💡 *Rekomendasi AI Product Architect:*\n\n${recommendation}\n\nIngin menerapkan rekomendasi ini atau punya pertimbangan lain?`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard()
+            .text('👍 Terapkan Rekomendasi Ini', `dq_apprec_${projectId}`)
+            .row()
+            .text('✏️ Ketik Pilihan Sendiri', `dq_cst_${projectId}`)
+            .text('🔙 Kembali ke Opsi', `select_project_${projectId}`),
+        }
+      );
+      return;
+    }
+
+    // Terapkan Rekomendasi AI Langsung
+    if (data.startsWith('dq_apprec_')) {
+      const projectId = data.replace('dq_apprec_', '');
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const activeQuestion = (project as any).phase_data?.activeQuestion;
+      const recommendation = activeQuestion?.aiRecommendation || 'Rekomendasi terbaik AI';
+
+      const answerText = `Saya setuju dan memilih rekomendasi AI: "${recommendation}". Lanjutkan dengan pertimbangan tersebut.`;
+      await ctx.reply(`👍 *Menerapkan Rekomendasi AI:*\n_${recommendation}_`, { parse_mode: 'Markdown' });
+
+      await triggerDiscoveryTurn(ctx, project, answerText);
+      return;
+    }
+
+    // Opsi Custom (Ketik Sendiri)
+    if (data.startsWith('dq_cst_')) {
+      const projectId = data.replace('dq_cst_', '');
+      await ctx.reply(
+        '✏️ *Tuliskan Jawaban / Keinginan Spesifik Anda*\n\nSilakan ketik langsung di chat ini apa yang Anda inginkan (misal nama fitur khusus, stack tertentu, gaya desain referensi, atau alur kerja Anda). AI akan menyesuaikan arsitektur produk sesuai arahan Anda.',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Opsi "Saya Belum Tahu"
+    if (data.startsWith('dq_dnt_')) {
+      const projectId = data.replace('dq_dnt_', '');
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const answerText = 'Saya belum tahu atau belum memutuskan aspek ini. Mohon berikan rekomendasi cerdas dan jelaskan pro-kontranya berdasarkan jenis produk ini.';
+      await ctx.reply('🤷 *Anda memilih: "Saya belum tahu"*\n\nAI Product Architect akan menganalisis kebutuhan dan memberikan rekomendasi yang paling tepat.', {
+        parse_mode: 'Markdown',
+      });
+
+      await triggerDiscoveryTurn(ctx, project, answerText);
+      return;
+    }
+
+    // Opsi "Lewati"
+    if (data.startsWith('dq_skp_')) {
+      const projectId = data.replace('dq_skp_', '');
+      const project = await projectsService.getProjectById(projectId, user.id);
+      if (!project) {
+        await ctx.reply('⚠️ Proyek tidak ditemukan.');
+        return;
+      }
+
+      const answerText = 'Lewati bagian ini untuk sekarang, simpan sebagai nilai default atau pertimbangan lanjutan.';
+      await ctx.reply('⏩ *Bagian ini dilewati sementara.* Melanjutkan ke aspek berikutnya...', {
+        parse_mode: 'Markdown',
+      });
+
+      await triggerDiscoveryTurn(ctx, project, answerText);
       return;
     }
   });
@@ -621,44 +1071,14 @@ export function createTelegramBot(
   // -------------------------------------------------------------
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
-    if (text.startsWith('/')) return; // handled by commands
+    if (text.startsWith('/')) return;
 
     const user = ctx.dbUser!;
     const project = await projectsService.getActiveProject(user.id);
 
     // If user has an active project in discovery, route to Discovery Service
     if (project && project.active_session_id) {
-      if (project.is_locked) {
-        await ctx.reply('⏳ AI sedang memproses respons sebelumnya. Mohon tunggu sejenak...');
-        return;
-      }
-
-      await projectsService.setProjectLock(project.id, true);
-      await ctx.replyWithChatAction('typing');
-
-      try {
-        const reply = await discoveryService.processUserMessage(
-          project.id,
-          project.active_session_id,
-          text
-        );
-
-        const kb = new InlineKeyboard();
-        if (reply.isReadyForPRD) {
-          kb.text('📑 Buat Dokumen PRD (.md)', `generate_prd_${project.id}`).row();
-        }
-        kb.text('🔍 Review Status', 'cmd_review').text('🔙 Menu Utama', 'cmd_menu');
-
-        await ctx.reply(reply.assistantResponse, {
-          parse_mode: 'Markdown',
-          reply_markup: kb,
-        });
-      } catch (err: any) {
-        logger.error({ err, projectId: project.id }, 'Error during discovery conversation');
-        await ctx.reply(`⚠️ Terjadi kendala saat memproses percakapan: ${err.message}`);
-      } finally {
-        await projectsService.setProjectLock(project.id, false);
-      }
+      await triggerDiscoveryTurn(ctx, project, text);
       return;
     }
 
@@ -676,7 +1096,7 @@ export function createTelegramBot(
       .text('📥 Buka Idea Inbox', 'cmd_list_ideas');
 
     await ctx.reply(
-      `💡 *Ide Baru Tercatat di Inbox!*\n\n*Judul:* ${idea.title}\n\nIngin mulai mendiskusikan & membuat PRD untuk ide ini?`,
+      `💡 *Ide Baru Tercatat di Inbox!*\n\n*Judul:* ${idea.title}\n\nIngin mulai mendiskusikan & merancang arsitektur PRD untuk ide ini?`,
       {
         parse_mode: 'Markdown',
         reply_markup: kb,

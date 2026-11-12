@@ -61,6 +61,7 @@ export class ProjectsService {
         title: cleanTitle,
         summary: input.summary ?? null,
         status: 'DISCOVERY',
+        current_phase: 'PHASE_1_IDEA',
         is_locked: false,
       })
       .select()
@@ -77,6 +78,7 @@ export class ProjectsService {
       .insert({
         project_id: data.id,
         status: 'ACTIVE',
+        current_phase: 'PHASE_1_IDEA',
         questions_count: 0,
       })
       .select()
@@ -176,5 +178,107 @@ export class ProjectsService {
       .from('projects')
       .update({ is_locked: isLocked, updated_at: new Date().toISOString() })
       .eq('id', projectId);
+  }
+
+  /**
+   * Delete a project with strict user authorization and safe cleanup
+   */
+  async deleteProject(id: string, userId: string): Promise<{ success: boolean; projectTitle: string }> {
+    // 1. Verifikasi kepemilikan proyek
+    const project = await this.getProjectById(id, userId);
+    if (!project) {
+      throw new Error('Proyek tidak ditemukan atau Anda tidak memiliki akses untuk menghapusnya.');
+    }
+
+    // 2. Putuskan self-referencing FK constraints (active_session_id) untuk mencegah constraint deadlocks
+    await (this.supabase as any)
+      .from('projects')
+      .update({ active_session_id: null })
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    // 3. Putuskan current_version_id pada prd_documents jika ada
+    await (this.supabase as any)
+      .from('prd_documents')
+      .update({ current_version_id: null })
+      .eq('project_id', id);
+
+    // 4. Hapus data validasi PRD
+    await (this.supabase as any)
+      .from('prd_validations')
+      .delete()
+      .eq('project_id', id);
+
+    // 5. Hapus keputusan produk (structured memory)
+    await (this.supabase as any)
+      .from('product_decisions')
+      .delete()
+      .eq('project_id', id);
+
+    // 6. Hapus sessions & messages
+    const { data: sessions } = await (this.supabase as any)
+      .from('discovery_sessions')
+      .select('id')
+      .eq('project_id', id);
+
+    if (sessions && sessions.length > 0) {
+      const sessionIds = sessions.map((s: any) => s.id);
+      await (this.supabase as any)
+        .from('messages')
+        .delete()
+        .in('session_id', sessionIds);
+
+      await (this.supabase as any)
+        .from('discovery_sessions')
+        .delete()
+        .eq('project_id', id);
+    }
+
+    // 7. Hapus prd_documents & versions
+    const { data: prdDoc } = await (this.supabase as any)
+      .from('prd_documents')
+      .select('id')
+      .eq('project_id', id)
+      .maybeSingle();
+
+    if (prdDoc) {
+      const { data: versions } = await (this.supabase as any)
+        .from('prd_versions')
+        .select('id')
+        .eq('prd_document_id', prdDoc.id);
+
+      if (versions && versions.length > 0) {
+        const versionIds = versions.map((v: any) => v.id);
+        await (this.supabase as any)
+          .from('document_exports')
+          .delete()
+          .in('prd_version_id', versionIds);
+
+        await (this.supabase as any)
+          .from('prd_versions')
+          .delete()
+          .eq('prd_document_id', prdDoc.id);
+      }
+
+      await (this.supabase as any)
+        .from('prd_documents')
+        .delete()
+        .eq('id', prdDoc.id);
+    }
+
+    // 8. Hapus entitas proyek utama
+    const { error } = await (this.supabase as any)
+      .from('projects')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      logger.error({ error, projectId: id, userId }, 'Failed to delete project');
+      throw error;
+    }
+
+    logger.info({ projectId: id, userId, title: project.title }, 'Successfully deleted project and its dependencies');
+    return { success: true, projectTitle: project.title };
   }
 }

@@ -104,4 +104,37 @@ export class IdeasService {
 
     return data as IdeaItem;
   }
+
+  /**
+   * Delete an idea with strict user ownership validation
+   */
+  async deleteIdea(id: string, userId: string): Promise<{ success: boolean; ideaTitle: string }> {
+    // 1. Validasi keberadaan dan kepemilikan ide
+    const idea = await this.getIdeaById(id, userId);
+    if (!idea) {
+      throw new Error('Ide tidak ditemukan atau Anda tidak memiliki akses untuk menghapusnya.');
+    }
+
+    // 2. Jika ide ini terhubung ke proyek, putuskan referensi idea_id di tabel projects (SET NULL)
+    await (this.supabase as any)
+      .from('projects')
+      .update({ idea_id: null, updated_at: new Date().toISOString() })
+      .eq('idea_id', id)
+      .eq('user_id', userId);
+
+    // 3. Hapus ide dari database
+    const { error } = await (this.supabase as any)
+      .from('ideas')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      logger.error({ error, ideaId: id, userId }, 'Failed to delete idea');
+      throw error;
+    }
+
+    logger.info({ ideaId: id, userId, title: idea.title }, 'Successfully deleted idea');
+    return { success: true, ideaTitle: idea.title };
+  }
 }

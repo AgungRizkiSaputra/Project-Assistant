@@ -6,13 +6,14 @@ import { IdeasService } from './modules/ideas/ideas.service.js';
 import { ProjectsService } from './modules/projects/projects.service.js';
 import { MemoryService } from './modules/memory/memory.service.js';
 import { DiscoveryService } from './modules/discovery/discovery.service.js';
+import { QualityValidatorService } from './modules/discovery/quality-validator.service.js';
 import { PrdService } from './modules/prd/prd.service.js';
 import { ExportService } from './modules/export/export.service.js';
 import { AIProviderFactory } from './ai/factory.js';
 import { createTelegramBot } from './telegram/bot.js';
 
 async function bootstrap() {
-  logger.info('Initializing Personal Product Assistant...');
+  logger.info('Initializing Personal Product Assistant (AI Product Architect)...');
 
   try {
     const config = loadConfig();
@@ -27,8 +28,9 @@ async function bootstrap() {
     // AI Provider
     const aiProvider = AIProviderFactory.getProvider(config);
 
+    const validatorService = new QualityValidatorService(supabase, memoryService, aiProvider);
     const discoveryService = new DiscoveryService(supabase, memoryService, aiProvider);
-    const prdService = new PrdService(supabase, memoryService, aiProvider);
+    const prdService = new PrdService(supabase, memoryService, aiProvider, validatorService);
     const exportService = new ExportService(supabase, config.SUPABASE_STORAGE_BUCKET);
 
     // Bot factory
@@ -41,7 +43,8 @@ async function bootstrap() {
       discoveryService,
       prdService,
       exportService,
-      memoryService
+      memoryService,
+      validatorService
     );
 
     // Graceful stop
@@ -57,7 +60,7 @@ async function bootstrap() {
     logger.info('Personal Product Assistant bot starting polling...');
     await bot.start({
       onStart: (botInfo) => {
-        logger.info({ username: botInfo.username }, 'Telegram Bot successfully started');
+        logger.info({ username: botInfo.username }, 'Telegram Bot successfully started as AI Product Architect');
       },
     });
   } catch (error) {
@@ -67,4 +70,3 @@ async function bootstrap() {
 }
 
 bootstrap();
-

@@ -12,7 +12,7 @@ export class GeminiProvider implements IAIProvider {
   private client: GoogleGenAI;
   private defaultModel: string;
 
-  constructor(apiKey: string, defaultModel = 'gemini-3.8-flash') {
+  constructor(apiKey: string, defaultModel = 'gemini-3.1-flash-lite') {
     if (!apiKey) {
       throw new Error('GEMINI_API_KEY is required for GeminiProvider');
     }
@@ -24,7 +24,10 @@ export class GeminiProvider implements IAIProvider {
     messages: AIChatMessage[],
     options?: AICompletionOptions
   ): Promise<AICompletionResponse> {
-    const model = options?.model || this.defaultModel;
+    const primaryModel = options?.model || this.defaultModel;
+    const fallbackModels = [primaryModel, 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'].filter(
+      (m, idx, arr) => arr.indexOf(m) === idx
+    );
 
     // Convert messages to Gemini format
     const systemInstruction = messages
@@ -39,31 +42,41 @@ export class GeminiProvider implements IAIProvider {
         parts: [{ text: m.content }],
       }));
 
-    try {
-      const response = await this.client.models.generateContent({
-        model,
-        contents: conversationHistory,
-        config: {
-          systemInstruction: systemInstruction || undefined,
-          temperature: options?.temperature ?? 0.7,
-        },
-      });
+    let lastError: any = null;
 
-      const text = response.text || '';
-      const usageMetadata = response.usageMetadata;
+    for (const model of fallbackModels) {
+      try {
+        const response = await this.client.models.generateContent({
+          model,
+          contents: conversationHistory,
+          config: {
+            systemInstruction: systemInstruction || undefined,
+            temperature: options?.temperature ?? 0.7,
+          },
+        });
 
-      return {
-        content: text,
-        promptTokens: usageMetadata?.promptTokenCount || 0,
-        completionTokens: usageMetadata?.candidatesTokenCount || 0,
-        totalTokens: usageMetadata?.totalTokenCount || 0,
-        model,
-        provider: this.name,
-      };
-    } catch (error) {
-      logger.error({ error, model }, 'Gemini API generateContent error');
-      throw error;
+        const text = response.text || '';
+        const usageMetadata = response.usageMetadata;
+
+        return {
+          content: text,
+          promptTokens: usageMetadata?.promptTokenCount || 0,
+          completionTokens: usageMetadata?.candidatesTokenCount || 0,
+          totalTokens: usageMetadata?.totalTokenCount || 0,
+          model,
+          provider: this.name,
+        };
+      } catch (error: any) {
+        lastError = error;
+        logger.warn(
+          { model, status: error?.status, message: error?.message },
+          'Gemini model generation failed, trying fallback if available'
+        );
+      }
     }
+
+    logger.error({ lastError }, 'All Gemini fallback models exhausted');
+    throw lastError;
   }
 
   async chatStructured<T>(

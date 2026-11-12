@@ -12,6 +12,19 @@ export interface UpsertDecisionInput {
   sourceReference?: string;
 }
 
+// Map newer 8-phase categories to schema 001 categories to ensure database constraint compatibility
+const CATEGORY_COMPATIBILITY_MAP: Record<string, string> = {
+  UI_UX_DESIGN_SYSTEM: 'UI_UX_REQUIREMENTS',
+  PAGE_SPECIFICATIONS: 'UI_UX_REQUIREMENTS',
+  API_SPECIFICATIONS: 'TECH_STACK',
+  SECURITY_OWASP: 'NON_FUNCTIONAL_REQUIREMENTS',
+  ERROR_EDGE_CASES: 'FUNCTIONAL_REQUIREMENTS',
+};
+
+function normalizeCategory(category: string): string {
+  return CATEGORY_COMPATIBILITY_MAP[category] || category;
+}
+
 export class MemoryService {
   constructor(private supabase: SupabaseClient<Database>) {}
 
@@ -21,13 +34,14 @@ export class MemoryService {
   async upsertDecision(input: UpsertDecisionInput): Promise<DecisionRecord> {
     const now = new Date().toISOString();
     const confirmedAt = input.status === 'CONFIRMED' ? now : null;
+    const safeCategory = normalizeCategory(input.category);
 
     // Check if an existing decision with same project and statement exists
     const { data: existing } = await (this.supabase as any)
       .from('product_decisions')
       .select('*')
       .eq('project_id', input.projectId)
-      .eq('category', input.category)
+      .eq('category', safeCategory)
       .eq('statement', input.statement)
       .maybeSingle();
 
@@ -55,7 +69,7 @@ export class MemoryService {
       .from('product_decisions')
       .insert({
         project_id: input.projectId,
-        category: input.category,
+        category: safeCategory,
         statement: input.statement,
         status: input.status,
         source_reference: input.sourceReference ?? null,

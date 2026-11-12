@@ -2,6 +2,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { Database, PrdDocumentRow, PrdVersionRow } from '../../db/types.js';
 import { IAIProvider, AIChatMessage } from '../../ai/provider.interface.js';
 import { MemoryService } from '../memory/memory.service.js';
+import { QualityValidatorService } from '../discovery/quality-validator.service.js';
 import { logger } from '../../config/logger.js';
 
 export interface PRDGenerateResult {
@@ -14,15 +15,17 @@ export class PrdService {
   constructor(
     private supabase: SupabaseClient<Database>,
     private memoryService: MemoryService,
-    private aiProvider: IAIProvider
-  ) { }
+    private aiProvider: IAIProvider,
+    private validatorService?: QualityValidatorService
+  ) {}
 
   /**
-   * Generate or Revise PRD based on Structured Memory
+   * Generate or Revise full 29-Section Industry-Standard PRD based on Structured Memory
    */
   async generateOrRevisePRD(
     projectId: string,
-    revisionFeedback?: string
+    revisionFeedback?: string,
+    targetSectionNumber?: number
   ): Promise<PRDGenerateResult> {
     // 1. Fetch project details
     const { data: project, error: pError } = await (this.supabase as any)
@@ -66,7 +69,6 @@ export class PrdService {
     } else {
       prdDocId = existingDoc.id;
 
-      // Get latest version
       const { data: latestVersion } = await (this.supabase as any)
         .from('prd_versions')
         .select('*')
@@ -81,90 +83,82 @@ export class PrdService {
       }
     }
 
-    // 4. Construct AI prompt according to Industry Standard PRD Template
-    const promptTemplate = `Anda adalah Lead Product Manager kelas dunia. Susun dokumen Product Requirements Document (PRD) yang komprehensif, presisi, dan siap diimplementasikan oleh tim teknik & desain.
+    // 4. Construct comprehensive 29-Section Prompt
+    const promptTemplate = `Anda adalah Principal AI Product Architect & Technical Lead kelas dunia.
+Tugas Anda adalah menghasilkan dokumen Product Requirements Document (PRD) berstandar tertinggi yang komprehensif, presisi, mendalam, dan siap digunakan oleh Full-Stack Developer maupun AI Coding Agent (seperti Claude Code, Cursor, atau Devin).
 
 JUDUL PROYEK: ${project.title}
-DESKRIPSI AWAL: ${project.summary || 'Tidak ada deskripsi awal'}
+DESKRIPSI PROYEK: ${project.summary || 'Tidak ada ringkasan'}
 
 SUMBER KEBENARAN (STRUCTURED MEMORY):
 ${memoryContext}
 
-${revisionFeedback
-        ? `CATATAN REVISI / PERUBAHAN DARI PENGGUNA:
+${
+  revisionFeedback
+    ? `CATATAN REVISI / PERUBAHAN DARI PENGGUNA:
 ${revisionFeedback}
+${targetSectionNumber ? `(Fokus revisi utama pada Seksi ${targetSectionNumber})` : ''}
 
 DOKUMEN VERSI SEBELUMNYA:
 ${previousMarkdown}`
-        : ''
-      }
+    : ''
+}
 
-STANDAR WAJIB STRUKTUR PRD:
-Dokumen Markdown yang dihasilkan HARUS mengikuti struktur seksi berikut secara berurutan dan lengkap:
-# [Judul Proyek] — Product Requirements Document (PRD)
-- Version: v${nextVersionNumber}.0
+STANDAR WAJIB STRUKTUR PRD (29 SEKSI LENGKAP):
+Dokumen Markdown yang Anda hasilkan HARUS mencakup SELURUH 29 seksi berikut secara berurutan dan terperinci. JANGAN melewatkan satu seksi pun:
+
+# ${project.title} — Product Requirements Document (PRD)
+- Document Version: v${nextVersionNumber}.0
 - Date: ${new Date().toISOString().slice(0, 10)}
-- Status: Ready for Review
+- Author: AI Product Architect
+- Status: Ready for Development
 
-## 1. Product Overview
-(Ringkasan eksekutif produk, visi, dan value proposition utama)
+## 1. Project Overview
+## 2. Product Vision & Objectives
+## 3. Problem Statement
+## 4. Target Audience & User Personas
+## 5. Scope & Project Boundaries (In Scope vs Out of Scope)
+## 6. Functional Requirements (Format FR-01, FR-02... dengan deskripsi & prioritas MoSCoW)
+## 7. Non-Functional Requirements (Performance, Reliability, Scalability, Observability)
+## 8. User Roles & Permission Matrix (Tabel Role x Permission lengkap)
+## 9. User Journey & Workflow (End-to-End workflow per peran dalam format langkah jelas / Mermaid syntax)
+## 10. Business Logic & Validation Rules (State transitions, data validation, edge rules)
+## 11. UI/UX Design Direction (Identitas visual khas, filosofi anti-slop, no lazy dashboards)
+## 12. Design System & Component Guidelines (Design tokens, palette warna HEX, typography scale, spacing)
+## 13. Page-by-Page UI Specifications (Deskripsi detail tiap halaman: Layout, Komponen, Empty State, Loading State, Error State)
+## 14. Responsive Design Specifications (Behavior pada Desktop >=1280px, Tablet 768-1024px, Mobile <768px)
+## 15. System Architecture (Arsitektur servis, modul, diagram flow)
+## 16. Technology Stack (Frontend, Backend, Database, Auth, Storage, Library pendukung beserta justifikasinya)
+## 17. Database Schema & Relationships (DDL PostgreSQL lengkap: tabel, primary key, foreign keys, constraints, indexes)
+## 18. API Specifications (Tabel endpoint REST: Method, Path, Auth Required, Request Body JSON, Response JSON, Status Codes)
+## 19. Authentication & Authorization (Session / JWT strategy, refresh token, hashing, OAuth jika ada)
+## 20. Security Architecture & OWASP Compliance (Mitigasi konkret untuk 10 ancaman OWASP Top 10 yang relevan)
+## 21. Error Handling & Edge Cases (Standar error format JSON, boundary limits, network failure fallback)
+## 22. Third-Party Integrations (SDK, Webhooks, API eksternal yang dibutuhkan)
+## 23. Performance & Scalability (Caching strategy, pagination, query optimization)
+## 24. SEO & Accessibility (Metadata, OpenGraph, WCAG 2.1 AA checklist)
+## 25. Testing Strategy (Unit test, integration test, E2E test plan, security audit)
+## 26. Acceptance Criteria (Format Gherkin Given-When-Then untuk fitur-fitur kritis)
+## 27. Deployment & Environment Configuration (Environment variables, Docker, CI/CD pipeline, VPS/Hosting)
+## 28. Risks, Assumptions & Dependencies (Risiko teknis & produk beserta rencana kontinjensi)
+## 29. Development Roadmap & Milestones (Fase implementasi MVP Sprint 1-4)
 
-## 2. Problem Statement
-(Masalah nyata yang dihadapi pengguna, dampak masalah, dan bukti urgensi)
+PANDUAN KUALITAS:
+- Berikan detail konkret dan kode/skema nyata, jangan gunakan kalimat klise generik ("Sistem akan dibuat dengan baik").
+- Sertakan blok DDL SQL pada Seksi 17.
+- Sertakan contoh JSON payload pada Seksi 18.
+- Format Markdown harus sangat bersih, rapi, dan mudah dibaca.
 
-## 3. Goals & Success Metrics
-(Tujuan terukur produk dan KPI kesuksesan peluncuran MVP)
-
-## 4. Target Users & Personas
-(Karakteristik target pengguna, kebutuhan utama, dan pain points)
-
-## 5. User Roles & Permissions
-(Daftar peran pengguna sistem: Guest, Member, Admin, dll.)
-
-## 6. User Flow & Core Journey
-(Langkah-langkah alur utama pengguna dari awal hingga akhir nilai tercapai)
-
-## 7. Functional Requirements
-(Daftar kapabilitas sistem dengan numbering terstruktur: FR-01, FR-02, dll.)
-
-## 8. Feature Specifications
-(Detail perilaku fungsional dari setiap fitur inti)
-
-## 9. UI/UX Requirements
-(Panduan antarmuka, affordance tombol, feedback sistem, dan pertimbangan responsif)
-
-## 10. Data Requirements
-(Model entitas data utama, relasi kunci, dan persistensi)
-
-## 11. Non-Functional Requirements
-(Performa, keamanan, privasi data, uptime, dan skalabilitas)
-
-## 12. Tech Stack Recommendations
-(Rekomendasi stack frontend, backend, database, dan hosting yang selaras)
-
-## 13. MVP Scope
-(Batasan fitur yang WAJIB ada di rilis pertama vs fitur yang ditunda)
-
-## 14. Acceptance Criteria
-(Kriteria uji kelayakan penerimaan produk sebelum go-live)
-
-## 15. Future Roadmap
-(Rencana evolusi produk pasca MVP)
-
-## 16. Assumptions & Open Questions
-(Asumsi yang diambil dan pertanyaan terbuka yang perlu validasi lanjutan)
-
-ATURAN OUTPUT:
-Kembalikan respon dalam format JSON:
+Format JSON yang HARUS Anda hasilkan:
 {
-  "contentMarkdown": "Dokumen Markdown lengkap sesuai seluruh seksi di atas",
-  "changelogSummary": "Ringkasan 2-4 poin perubahan pada versi ini dibanding versi sebelumnya (atau 'Initial PRD release' untuk v1)"
+  "contentMarkdown": "Dokumen Markdown lengkap seluruh 29 seksi di atas",
+  "changelogSummary": "Ringkasan 2-4 poin perubahan kunci pada versi v${nextVersionNumber}.0 ini"
 }`;
 
     const messages: AIChatMessage[] = [
       {
         role: 'system',
-        content: 'Anda adalah Lead Product Manager yang hanya menghasilkan PRD terstandarisasi dan output JSON yang valid.',
+        content: 'Anda adalah Lead Software Architect & Product Manager yang hanya menghasilkan PRD 29 seksi berstandar tinggi tanpa placeholder kosong.',
       },
       {
         role: 'user',
@@ -202,16 +196,17 @@ Kembalikan respon dalam format JSON:
       })
       .eq('id', prdDocId);
 
-    // 7. Update project status to PRD_READY
+    // 7. Update project status to PRD_READY & current_phase to PHASE_8_PRD_READY
     await (this.supabase as any)
       .from('projects')
       .update({
         status: 'PRD_READY',
+        current_phase: 'PHASE_8_PRD_READY',
         updated_at: new Date().toISOString(),
       })
       .eq('id', projectId);
 
-    logger.info({ projectId, versionNumber: nextVersionNumber }, 'Generated new PRD version');
+    logger.info({ projectId, versionNumber: nextVersionNumber }, 'Generated 29-section PRD version');
 
     return {
       versionNumber: nextVersionNumber,
@@ -246,7 +241,7 @@ Kembalikan respon dalam format JSON:
   }
 
   /**
-   * List all versions of a PRD
+   * List all versions of a PRD for a given project
    */
   async listVersions(projectId: string): Promise<PrdVersionRow[]> {
     const { data: doc } = await (this.supabase as any)
@@ -264,5 +259,108 @@ Kembalikan respon dalam format JSON:
       .order('version_number', { ascending: false });
 
     return (versions || []) as PrdVersionRow[];
+  }
+
+  /**
+   * Delete an individual PRD version with user ownership validation without deleting parent project
+   */
+  async deletePRDVersion(
+    versionId: string,
+    projectId: string,
+    userId: string
+  ): Promise<{ success: boolean; versionTitle: string; remainingVersionsCount: number }> {
+    // 1. Verifikasi kepemilikan proyek
+    const { data: project } = await (this.supabase as any)
+      .from('projects')
+      .select('id, title, user_id')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!project) {
+      throw new Error('Proyek tidak ditemukan atau Anda tidak memiliki akses ke dokumen ini.');
+    }
+
+    // 2. Ambil dokumen induk PRD
+    const { data: prdDoc } = await (this.supabase as any)
+      .from('prd_documents')
+      .select('*')
+      .eq('project_id', projectId)
+      .maybeSingle();
+
+    if (!prdDoc) {
+      throw new Error('Dokumen PRD tidak ditemukan.');
+    }
+
+    // 3. Ambil data versi PRD yang akan dihapus
+    const { data: targetVersion } = await (this.supabase as any)
+      .from('prd_versions')
+      .select('*')
+      .eq('id', versionId)
+      .eq('prd_document_id', prdDoc.id)
+      .maybeSingle();
+
+    if (!targetVersion) {
+      throw new Error('Versi PRD tidak ditemukan.');
+    }
+
+    // 4. Hapus riwayat ekspor terkait versi ini
+    await (this.supabase as any)
+      .from('document_exports')
+      .delete()
+      .eq('prd_version_id', versionId);
+
+    // 5. Cek apakah ini versi aktif di prd_documents
+    const isCurrentVersion = prdDoc.current_version_id === versionId;
+
+    // 6. Hapus versi dari tabel prd_versions
+    const { error: deleteError } = await (this.supabase as any)
+      .from('prd_versions')
+      .delete()
+      .eq('id', versionId);
+
+    if (deleteError) {
+      logger.error({ deleteError, versionId }, 'Failed to delete PRD version');
+      throw deleteError;
+    }
+
+    // 7. Ambil versi tersisa
+    const remainingVersions = await this.listVersions(projectId);
+
+    // 8. Jika versi yang dihapus adalah current_version, perbarui pointer ke versi terbaru tersisa
+    if (isCurrentVersion) {
+      const nextLatestVersion = remainingVersions[0] || null;
+      await (this.supabase as any)
+        .from('prd_documents')
+        .update({
+          current_version_id: nextLatestVersion ? nextLatestVersion.id : null,
+          status: nextLatestVersion ? 'DRAFT' : 'ARCHIVED',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', prdDoc.id);
+
+      // Jika tidak ada versi tersisa, kembalikan status project
+      if (!nextLatestVersion) {
+        await (this.supabase as any)
+          .from('projects')
+          .update({
+            status: 'DISCOVERY',
+            current_phase: 'PHASE_7_VALIDATION',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', projectId);
+      }
+    }
+
+    logger.info(
+      { versionId, projectId, remaining: remainingVersions.length },
+      'Successfully deleted individual PRD version'
+    );
+
+    return {
+      success: true,
+      versionTitle: targetVersion.title,
+      remainingVersionsCount: remainingVersions.length,
+    };
   }
 }
