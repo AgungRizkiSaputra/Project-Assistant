@@ -30,16 +30,48 @@ export class ProjectsService {
   }
 
   /**
+   * Find an existing project linked to a specific idea
+   */
+  async findProjectByIdeaId(userId: string, ideaId: string): Promise<ProjectItem | null> {
+    const { data } = await (this.supabase as any)
+      .from('projects')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('idea_id', ideaId)
+      .maybeSingle();
+
+    return data || null;
+  }
+
+  /**
    * Create a new project, preventing duplicate titles for the same user
    */
   async createProject(input: CreateProjectInput): Promise<{ project: ProjectItem; isExisting: boolean }> {
     const cleanTitle = input.title.trim().slice(0, 150);
 
-    // 1. Cek apakah proyek dengan nama sama sudah pernah dibuat
-    const existing = await this.findProjectByTitle(input.userId, cleanTitle);
+    // 1. Cek apakah proyek dari ide ini atau dengan nama sama sudah pernah dibuat
+    let existing: ProjectItem | null = null;
+    if (input.ideaId) {
+      existing = await this.findProjectByIdeaId(input.userId, input.ideaId);
+    }
+    if (!existing) {
+      existing = await this.findProjectByTitle(input.userId, cleanTitle);
+    }
+
     if (existing) {
-      logger.info({ projectId: existing.id, title: cleanTitle }, 'Reusing existing project with identical name');
-      
+      logger.info({ projectId: existing.id, title: cleanTitle }, 'Reusing existing project with identical name or idea');
+
+      // Aktifkan proyek ini (perbarui updated_at dan hubungkan idea_id jika belum terhubung)
+      const updatePayload: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (input.ideaId && !existing.idea_id) {
+        updatePayload.idea_id = input.ideaId;
+      }
+      await (this.supabase as any)
+        .from('projects')
+        .update(updatePayload)
+        .eq('id', existing.id)
+        .eq('user_id', input.userId);
+
       // Jika berasal dari ide, tetap tandai ide sebagai converted
       if (input.ideaId) {
         await (this.supabase as any)
@@ -276,6 +308,15 @@ export class ProjectsService {
     if (error) {
       logger.error({ error, projectId: id, userId }, 'Failed to delete project');
       throw error;
+    }
+
+    // 9. Jika proyek berasal dari ide di Idea Inbox, kembalikan status ide ke INBOX agar bisa dijadikan proyek lagi
+    if (project.idea_id) {
+      await (this.supabase as any)
+        .from('ideas')
+        .update({ status: 'INBOX', updated_at: new Date().toISOString() })
+        .eq('id', project.idea_id)
+        .eq('user_id', userId);
     }
 
     logger.info({ projectId: id, userId, title: project.title }, 'Successfully deleted project and its dependencies');

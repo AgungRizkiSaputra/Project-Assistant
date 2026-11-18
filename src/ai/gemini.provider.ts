@@ -25,7 +25,7 @@ export class GeminiProvider implements IAIProvider {
     options?: AICompletionOptions
   ): Promise<AICompletionResponse> {
     const primaryModel = options?.model || this.defaultModel;
-    const fallbackModels = [primaryModel, 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'].filter(
+    const fallbackModels = [primaryModel, 'gemini-3.1-flash-lite'].filter(
       (m, idx, arr) => arr.indexOf(m) === idx
     );
 
@@ -52,6 +52,8 @@ export class GeminiProvider implements IAIProvider {
           config: {
             systemInstruction: systemInstruction || undefined,
             temperature: options?.temperature ?? 0.7,
+            maxOutputTokens: options?.maxTokens,
+            responseMimeType: options?.responseMimeType,
           },
         });
 
@@ -95,6 +97,7 @@ export class GeminiProvider implements IAIProvider {
     const response = await this.chat(enrichedMessages, {
       ...options,
       temperature: options?.temperature ?? 0.2, // lower temperature for deterministic JSON
+      responseMimeType: 'application/json',
     });
 
     try {
@@ -106,8 +109,20 @@ export class GeminiProvider implements IAIProvider {
         cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
       }
 
-      const parsed = JSON.parse(cleaned) as T;
-      return { data: parsed, usage: response };
+      try {
+        const parsed = JSON.parse(cleaned) as T;
+        return { data: parsed, usage: response };
+      } catch {
+        // Fallback: extract outermost JSON object block if extra text surrounded it
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+          const extracted = cleaned.slice(firstBrace, lastBrace + 1);
+          const parsed = JSON.parse(extracted) as T;
+          return { data: parsed, usage: response };
+        }
+        throw new Error('Response does not contain a valid JSON object');
+      }
     } catch (parseError) {
       logger.error({ rawContent: response.content, parseError }, 'Failed to parse structured JSON from Gemini');
       throw new Error(`Failed to parse AI JSON response: ${(parseError as Error).message}`);

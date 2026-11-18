@@ -72,13 +72,13 @@ export class DiscoveryService {
     const existingDecisions = await this.memoryService.getDecisionsByProject(projectId);
     const structuredMemoryContext = this.memoryService.formatDecisionsForPrompt(existingDecisions);
 
-    // 3. Fetch recent conversation turns (last 8 messages)
+    // 3. Fetch recent conversation turns (last 2 turns for context pruning to optimize latency & tokens)
     const { data: recentMsgs } = await (this.supabase as any)
       .from('messages')
       .select('role, content')
       .eq('session_id', sessionId)
       .order('created_at', { ascending: false })
-      .limit(8);
+      .limit(3);
 
     const history: AIChatMessage[] = ((recentMsgs || []) as any[])
       .reverse()
@@ -269,5 +269,79 @@ Format JSON yang WAJIB dihasilkan:
 
     logger.info({ projectId, targetPhase }, 'Advanced project discovery phase');
     return targetPhase;
+  }
+
+  /**
+   * Fast-Track / Express Discovery:
+   * AI analyzes the project concept, automatically synthesizes solid architecture & OWASP decisions,
+   * and brings the project directly to Phase 7 (Validation & Approval) in a single high-speed turn.
+   */
+  async fastTrackDiscovery(projectId: string): Promise<{ success: boolean; decisionsCount: number }> {
+    const { data: project } = await (this.supabase as any)
+      .from('projects')
+      .select('*')
+      .eq('id', projectId)
+      .single();
+
+    if (!project) throw new Error(`Project not found: ${projectId}`);
+
+    const existingDecisions = await this.memoryService.getDecisionsByProject(projectId);
+    const existingContext = this.memoryService.formatDecisionsForPrompt(existingDecisions);
+
+    const prompt = `Anda adalah Principal Product Architect & Tech Lead.
+Pengguna menginginkan jalur cepat (Fast-Track) untuk proyek: "${project.title}"
+Deskripsi Ide: "${project.summary || project.title}"
+
+Keputusan yang sudah ada sejauh ini:
+${existingContext || 'Belum ada keputusan tersimpan'}
+
+Tugas Anda:
+Sintesiskan secara otomatis keputusan arsitektur terbaik, terukur, dan aman untuk aspek-aspek yang masih kosong:
+1. Target User & Persona
+2. MVP Core Scope (3-5 fitur inti)
+3. User Roles (RBAC) & Main Flow
+4. UI/UX Design Direction (Aesthetic, Palette, Layout anti-slop)
+5. Tech Stack (Frontend, Backend, PostgreSQL DB, Auth)
+6. Security & OWASP Top 10 (Access control, injection defense, secrets, audit log)
+
+Format output JSON WAJIB:
+{
+  "synthesizedDecisions": [
+    {
+      "category": "TARGET_USERS | MVP_SCOPE | USER_ROLES | CORE_FLOW | UI_UX_DESIGN_SYSTEM | TECH_STACK | SECURITY_OWASP",
+      "statement": "Pernyataan keputusan konkret dan spesifik",
+      "status": "CONFIRMED"
+    }
+  ],
+  "summary": "Ringkasan cepat arsitektur produk yang dihasilkan secara otomatis"
+}`;
+
+    const res = await this.aiProvider.chatStructured<{
+      synthesizedDecisions: Array<{
+        category: DecisionCategory;
+        statement: string;
+        status: DecisionStatus;
+      }>;
+      summary: string;
+    }>([{ role: 'user', content: prompt }], 'Valid JSON matching fast-track schema');
+
+    let count = 0;
+    if (res.data?.synthesizedDecisions && Array.isArray(res.data.synthesizedDecisions)) {
+      for (const dec of res.data.synthesizedDecisions) {
+        await this.memoryService.upsertDecision({
+          projectId,
+          category: dec.category,
+          statement: dec.statement,
+          status: dec.status,
+          sourceReference: 'Fast-Track AI Synthesis',
+        });
+        count++;
+      }
+    }
+
+    // Advance project directly to PHASE_7_VALIDATION
+    await this.advancePhase(projectId, 'PHASE_7_VALIDATION');
+
+    return { success: true, decisionsCount: count };
   }
 }

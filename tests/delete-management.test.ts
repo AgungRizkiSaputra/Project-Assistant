@@ -187,4 +187,72 @@ describe('Delete & Project Management Module', () => {
     expect(result.versionTitle).toBe('SaaS App v2.0');
     expect(result.remainingVersionsCount).toBe(1);
   });
+
+  it('resets linked idea status back to INBOX when its project is deleted', async () => {
+    const ideaUpdateMock = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        eq: vi.fn().mockResolvedValue({ error: null }),
+      }),
+    });
+
+    const mockSupabase = {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'projects') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                eq: vi.fn().mockReturnValue({
+                  maybeSingle: vi.fn().mockResolvedValue({
+                    data: { id: 'proj-2', user_id: 'user-1', idea_id: 'idea-2', title: 'Aplikasi Tabungan' },
+                  }),
+                }),
+              }),
+            }),
+            update: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                eq: vi.fn().mockResolvedValue({ error: null }),
+              }),
+            }),
+            delete: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                eq: vi.fn().mockResolvedValue({ error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === 'ideas') {
+          return { update: ideaUpdateMock };
+        }
+        if (table === 'prd_documents') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({ data: null }),
+              }),
+            }),
+            update: vi.fn().mockReturnValue({
+              eq: vi.fn().mockResolvedValue({ error: null }),
+            }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: [] }),
+          }),
+          delete: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ error: null }),
+            in: vi.fn().mockResolvedValue({ error: null }),
+          }),
+        };
+      }),
+    };
+
+    const service = new ProjectsService(mockSupabase as any);
+    const result = await service.deleteProject('proj-2', 'user-1');
+
+    expect(result.success).toBe(true);
+    expect(ideaUpdateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'INBOX' })
+    );
+  });
 });

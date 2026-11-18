@@ -205,6 +205,15 @@ Aspek yang dievaluasi:
 
 Hasilkan pertanyaan konfirmasi persetujuan atau pilihan bagian mana yang ingin disempurnakan sebelum dokumen PRD di-generate.`;
 
+    case 'PHASE_8_PRD_READY':
+      return `FASE 8: PRD GENERATION & READY
+Tujuan: Menyusun dokumen PRD 29 seksi standar industri melalui tombol "Generate PRD (29 Seksi)" sistem.
+ATURAN WAJIB FASE 8:
+- JANGAN pernah menuliskan isi lengkap dokumen PRD 29 seksi secara langsung ke dalam field JSON "assistantResponse" karena akan melebihi batas pesan Telegram dan tidak tersimpan ke database PRD.
+- JANGAN membuat opsi palsu seperti "Tampilkan PRD Sekarang".
+- Jelaskan secara singkat bahwa spesifikasi sudah siap atau catat revisi terakhir pengguna ke dalam "identifiedDecisions", lalu arahkan pengguna menekan tombol "📑 Generate PRD (29 Seksi)" di bawah pesan.
+- Kosongkan field "question" (jangan kirim opsi pertanyaan baru) kecuali pengguna secara spesifik meminta revisi aspek tertentu.`;
+
     default:
       return meta.description;
   }

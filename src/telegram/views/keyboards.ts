@@ -51,6 +51,11 @@ export function getDiscoveryPhaseKeyboard(
   const meta = getPhaseMetadata(currentPhase);
   const kb = new InlineKeyboard();
 
+  // Tombol Fast-Track instan untuk pengguna yang ingin ringkas
+  if (meta.number < 7) {
+    kb.text('⚡ Fast-Track PRD (Rekomendasi Cepat)', `fast_track_${projectId}`).row();
+  }
+
   if (meta.nextPhase && canAdvance) {
     const nextMeta = getPhaseMetadata(meta.nextPhase);
     const nextNum = PHASE_KEY_TO_NUM[meta.nextPhase];
@@ -76,7 +81,9 @@ export function getDiscoveryPhaseKeyboard(
 
 export function getInteractiveQuestionKeyboard(
   projectId: string,
-  question: DiscoveryQuestion
+  question: DiscoveryQuestion,
+  currentPhase?: DiscoveryPhase,
+  canAdvance?: boolean
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const selected = new Set(question.selectedOptionIds || []);
@@ -111,13 +118,37 @@ export function getInteractiveQuestionKeyboard(
   assistRow.forEach((b) => kb.text(b.text, b.data));
   kb.row();
 
-  // 4. Tombol Konfirmasi jika multiSelect atau sudah ada opsi yang dipilih
+  // 4. Tombol Konfirmasi jika multiSelect
   if (question.multiSelect) {
     const hasSelection = selected.size > 0;
     kb.text(
       hasSelection ? `✅ Konfirmasi Pilihan (${selected.size})` : '✅ Pilih Opsi di Atas',
       `dq_cf_${projectId}`
     ).row();
+  }
+
+  // 5. Tombol Navigasi Fase (Lanjut / Kembali / Audit / Generate PRD / Fast-Track)
+  const meta = currentPhase ? getPhaseMetadata(currentPhase) : null;
+  if (meta) {
+    if (meta.number >= 7) {
+      kb.text('🔍 Review Audit Spesifikasi', `audit_${projectId}`).row();
+      kb.text('📑 Generate PRD (29 Seksi)', `gen_prd_${projectId}`).row();
+    }
+    if (meta.nextPhase && (canAdvance ?? true)) {
+      const nextMeta = getPhaseMetadata(meta.nextPhase);
+      const nextNum = PHASE_KEY_TO_NUM[meta.nextPhase];
+      kb.text(`⏭️ Lanjut ke ${nextMeta.shortName}`, `adv_${projectId}_${nextNum}`).row();
+    }
+    if (meta.prevPhase) {
+      const prevMeta = getPhaseMetadata(meta.prevPhase);
+      const prevNum = PHASE_KEY_TO_NUM[meta.prevPhase];
+      kb.text(`⏮️ Kembali ke ${prevMeta.shortName}`, `adv_${projectId}_${prevNum}`).row();
+    }
+  }
+
+  // Tombol Fast-Track hanya ditampilkan sebelum Fase 7
+  if (!meta || meta.number < 7) {
+    kb.text('⚡ Langsung Lengkapi Otomatis (Fast-Track)', `fast_track_${projectId}`).row();
   }
 
   return kb;

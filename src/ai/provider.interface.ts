@@ -7,6 +7,7 @@ export interface AICompletionOptions {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  responseMimeType?: string;
 }
 
 export interface AICompletionResponse {
