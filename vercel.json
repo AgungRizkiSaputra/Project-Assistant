@@ -1,6 +1,15 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api" }
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/_expo/(.*)", "destination": "/_expo/$1" },
+    { "source": "/assets/(.*)", "destination": "/assets/$1" },
+    { "source": "/favicon.ico", "destination": "/favicon.ico" },
+    { "source": "/metadata.json", "destination": "/metadata.json" },
+    { "source": "/ideas", "destination": "/api" },
+    { "source": "/projects", "destination": "/api" },
+    { "source": "/assistant", "destination": "/api" },
+    { "source": "/spinner", "destination": "/api" },
+    { "source": "/", "destination": "/api" }
   ]
 }

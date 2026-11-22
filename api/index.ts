@@ -28,14 +28,18 @@ async function serveIndexHtml(reply: any) {
 async function bootstrapServerless(): Promise<FastifyInstance> {
   const { bot, apiApp } = createAssistantApp();
 
-  // Root endpoints
+  // Root & SPA page endpoints
   apiApp.get('/', async (_req, reply) => serveIndexHtml(reply));
   apiApp.get('/index.html', async (_req, reply) => serveIndexHtml(reply));
+  apiApp.get('/ideas', async (_req, reply) => serveIndexHtml(reply));
+  apiApp.get('/projects', async (_req, reply) => serveIndexHtml(reply));
+  apiApp.get('/assistant', async (_req, reply) => serveIndexHtml(reply));
+  apiApp.get('/spinner', async (_req, reply) => serveIndexHtml(reply));
 
   // /api handler: if opened by browser, serve UI; if API client, return info
   apiApp.get('/api', async (req, reply) => {
     const accept = req.headers.accept || '';
-    if (accept.includes('text/html')) {
+    if (accept.includes('text/html') || !accept.includes('application/json')) {
       return serveIndexHtml(reply);
     }
     return { status: 'ok', service: 'Personal Project Hub API', version: '1.0.0' };
