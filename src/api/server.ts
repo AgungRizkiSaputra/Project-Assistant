@@ -125,15 +125,27 @@ export function createApiServer(deps: ApiServerDependencies): FastifyInstance {
 
       const ideasInbox = allIdeas.filter((i) => i.status === 'INBOX' || !i.status);
       const ideasConverted = allIdeas.filter((i) => i.status === 'CONVERTED_TO_PROJECT');
-      const completedProjects = allProjects.filter((p) => p.status === 'COMPLETED');
-      const activeProjects = allProjects.filter((p) => p.status !== 'COMPLETED' && p.status !== 'ARCHIVED');
+      const completedProjects = allProjects.filter(
+        (p) => p.status === 'COMPLETED' || p.status === 'PRD_READY' || p.current_phase === 'PHASE_8_PRD_READY'
+      );
+      const activeProjects = allProjects.filter(
+        (p) => p.status !== 'COMPLETED' && p.status !== 'PRD_READY' && p.current_phase !== 'PHASE_8_PRD_READY' && p.status !== 'ARCHIVED'
+      );
 
-      // Fetch latest PRDs
-      const { data: prds } = await (supabase as any)
-        .from('prd_documents')
-        .select('*, prd_versions(*)')
-        .order('updated_at', { ascending: false })
-        .limit(5);
+      // Fetch user's PRD documents cleanly (avoid PostgREST PGRST201 join ambiguity)
+      const projectIds = allProjects.map((p) => p.id);
+      let prds: any[] = [];
+      if (projectIds.length > 0) {
+        const { data: docs, error: docError } = await (supabase as any)
+          .from('prd_documents')
+          .select('id, project_id, title, status, created_at, updated_at')
+          .in('project_id', projectIds)
+          .order('updated_at', { ascending: false });
+
+        if (!docError && docs) {
+          prds = docs;
+        }
+      }
 
       return {
         metrics: {
@@ -143,10 +155,10 @@ export function createApiServer(deps: ApiServerDependencies): FastifyInstance {
           totalProjects: allProjects.length,
           activeProjects: activeProjects.length,
           completedProjects: completedProjects.length,
-          totalPRDs: prds?.length || 0,
+          totalPRDs: prds.length,
         },
         recentIdeas: allIdeas.slice(0, 5),
-        recentPRDs: prds || [],
+        recentPRDs: prds.slice(0, 5),
         recentProjects: allProjects.slice(0, 5),
       };
     } catch (err: any) {
