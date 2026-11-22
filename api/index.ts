@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { webhookCallback } from 'grammy';
-import { createAssistantApp } from './app.js';
-import { logger } from './config/logger.js';
+import { createAssistantApp } from '../src/app.js';
+import { logger } from '../src/config/logger.js';
 
 let appPromise: Promise<FastifyInstance> | null = null;
 
@@ -75,7 +75,7 @@ export default async function handler(req: any, res: any) {
   try {
     if (!appPromise) {
       appPromise = bootstrapServerless().catch((bootErr) => {
-        appPromise = null; // Allow retry on next request if it failed
+        appPromise = null;
         throw bootErr;
       });
     }
