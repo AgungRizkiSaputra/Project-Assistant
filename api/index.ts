@@ -13,11 +13,19 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
   // Root fallback to serve index.html if routed to serverless
   apiApp.get('/', async (_req, reply) => {
     try {
-      const indexPath = path.join(process.cwd(), 'public', 'index.html');
-      const html = await fs.readFile(indexPath, 'utf-8');
-      return reply.type('text/html').send(html);
+      const candidates = [
+        path.join(process.cwd(), 'index.html'),
+        path.join(process.cwd(), 'public', 'index.html'),
+      ];
+      for (const p of candidates) {
+        try {
+          const html = await fs.readFile(p, 'utf-8');
+          if (html) return reply.type('text/html').send(html);
+        } catch {}
+      }
+      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant Ready</h3></body></html>');
     } catch {
-      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant</h3></body></html>');
+      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant Ready</h3></body></html>');
     }
   });
 
@@ -65,20 +73,6 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
       return reply.status(500).send({ success: false, error: err.message });
     }
   });
-
-  // Health check endpoint with environment diagnostic
-  apiApp.get('/api/health', async () => ({
-    status: 'ok',
-    mode: 'vercel-serverless',
-    timestamp: new Date().toISOString(),
-    env_configured: {
-      SUPABASE_URL: !!process.env.SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-      TELEGRAM_BOT_TOKEN: !!process.env.TELEGRAM_BOT_TOKEN,
-      TELEGRAM_ALLOWED_USER_IDS: !!process.env.TELEGRAM_ALLOWED_USER_IDS,
-      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
-    },
-  }));
 
   await apiApp.ready();
   return apiApp;
