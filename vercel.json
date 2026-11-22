@@ -1,6 +1,11 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api" }
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/_expo/(.*)", "destination": "/_expo/$1" },
+    { "source": "/assets/(.*)", "destination": "/assets/$1" },
+    { "source": "/favicon.ico", "destination": "/favicon.ico" },
+    { "source": "/metadata.json", "destination": "/metadata.json" },
+    { "source": "/((?!api|_expo|assets|favicon.ico|metadata.json).*)", "destination": "/index.html" }
   ]
 }

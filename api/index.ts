@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { webhookCallback } from 'grammy';
-import { createAssistantApp } from '../src/app.js';
+import { createAssistantApp } from '../src/bootstrap.js';
 import { logger } from '../src/config/logger.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';

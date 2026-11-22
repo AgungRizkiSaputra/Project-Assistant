@@ -1,5 +1,5 @@
 import { logger } from './config/logger.js';
-import { createAssistantApp } from './app.js';
+import { createAssistantApp } from './bootstrap.js';
 
 async function bootstrap() {
   logger.info('Initializing Personal Product Assistant (AI Product Architect)...');
