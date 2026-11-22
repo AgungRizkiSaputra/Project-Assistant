@@ -1,4 +1,3 @@
-import { chromium } from 'playwright';
 import { marked } from 'marked';
 import PDFDocument from 'pdfkit';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -129,21 +128,24 @@ export class ExportService {
 
     let generated = false;
 
-    // Try Playwright Chromium with 6s timeout; if timeout/fails, use instant Native PDF
-    try {
-      const browser = await Promise.race([
-        chromium.launch({ headless: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Playwright launch timeout')), 6000)),
-      ]);
+    // In serverless (Vercel) or when Chromium binary is absent, use instant Native PDFKit generator
+    if (!process.env.VERCEL) {
+      try {
+        const { chromium } = await import('playwright');
+        const browser = await Promise.race([
+          chromium.launch({ headless: true }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Playwright launch timeout')), 6000)),
+        ]);
 
-      const page = await browser.newPage();
-      const htmlBody = await marked.parse(markdownContent);
-      await page.setContent(`<!DOCTYPE html><html><body style="font-family: sans-serif; padding: 25px; line-height: 1.6;">${htmlBody}</body></html>`, { waitUntil: 'load' });
-      await page.pdf({ path: filePath, format: 'A4', margin: { top: '15mm', right: '15mm', bottom: '15mm', left: '15mm' } });
-      await browser.close();
-      generated = true;
-    } catch (browserErr) {
-      logger.warn({ browserErr }, 'Playwright launch skipped/timed out, switching to instant Native PDF renderer');
+        const page = await browser.newPage();
+        const htmlBody = await marked.parse(markdownContent);
+        await page.setContent(`<!DOCTYPE html><html><body style="font-family: sans-serif; padding: 25px; line-height: 1.6;">${htmlBody}</body></html>`, { waitUntil: 'load' });
+        await page.pdf({ path: filePath, format: 'A4', margin: { top: '15mm', right: '15mm', bottom: '15mm', left: '15mm' } });
+        await browser.close();
+        generated = true;
+      } catch (browserErr) {
+        logger.warn({ browserErr }, 'Playwright launch skipped/timed out, switching to instant Native PDF renderer');
+      }
     }
 
     if (!generated) {

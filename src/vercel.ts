@@ -53,11 +53,18 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
     }
   });
 
-  // Health check endpoint
+  // Health check endpoint with environment diagnostic
   apiApp.get('/api/health', async () => ({
     status: 'ok',
     mode: 'vercel-serverless',
     timestamp: new Date().toISOString(),
+    env: {
+      has_SUPABASE_URL: !!process.env.SUPABASE_URL,
+      has_SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      has_TELEGRAM_BOT_TOKEN: !!process.env.TELEGRAM_BOT_TOKEN,
+      has_TELEGRAM_ALLOWED_USER_IDS: !!process.env.TELEGRAM_ALLOWED_USER_IDS,
+      has_GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    },
   }));
 
   await apiApp.ready();
@@ -65,9 +72,36 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
 }
 
 export default async function handler(req: any, res: any) {
-  if (!appPromise) {
-    appPromise = bootstrapServerless();
+  try {
+    if (!appPromise) {
+      appPromise = bootstrapServerless().catch((bootErr) => {
+        appPromise = null; // Allow retry on next request if it failed
+        throw bootErr;
+      });
+    }
+    const app = await appPromise;
+    app.server.emit('request', req, res);
+  } catch (err: any) {
+    logger.error({ err }, 'Serverless handler execution failed');
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify(
+        {
+          error: 'SERVERLESS_INITIALIZATION_ERROR',
+          message: err?.message || 'Failed to initialize serverless application',
+          missing_env_check: {
+            SUPABASE_URL: !process.env.SUPABASE_URL ? 'MISSING' : 'OK',
+            SUPABASE_SERVICE_ROLE_KEY: !process.env.SUPABASE_SERVICE_ROLE_KEY ? 'MISSING' : 'OK',
+            TELEGRAM_BOT_TOKEN: !process.env.TELEGRAM_BOT_TOKEN ? 'MISSING' : 'OK',
+            TELEGRAM_ALLOWED_USER_IDS: !process.env.TELEGRAM_ALLOWED_USER_IDS ? 'MISSING' : 'OK',
+            GEMINI_API_KEY: !process.env.GEMINI_API_KEY ? 'MISSING' : 'OK',
+          },
+          stack: err?.stack,
+        },
+        null,
+        2
+      )
+    );
   }
-  const app = await appPromise;
-  app.server.emit('request', req, res);
 }
