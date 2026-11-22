@@ -2,11 +2,24 @@ import { FastifyInstance } from 'fastify';
 import { webhookCallback } from 'grammy';
 import { createAssistantApp } from '../src/app.js';
 import { logger } from '../src/config/logger.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 let appPromise: Promise<FastifyInstance> | null = null;
 
 async function bootstrapServerless(): Promise<FastifyInstance> {
   const { bot, apiApp } = createAssistantApp();
+
+  // Root fallback to serve index.html if routed to serverless
+  apiApp.get('/', async (_req, reply) => {
+    try {
+      const indexPath = path.join(process.cwd(), 'public', 'index.html');
+      const html = await fs.readFile(indexPath, 'utf-8');
+      return reply.type('text/html').send(html);
+    } catch {
+      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant</h3></body></html>');
+    }
+  });
 
   // Register Telegram Webhook handler for Vercel
   apiApp.post('/api/telegram-webhook', webhookCallback(bot, 'fastify'));
@@ -58,12 +71,12 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
     status: 'ok',
     mode: 'vercel-serverless',
     timestamp: new Date().toISOString(),
-    env: {
-      has_SUPABASE_URL: !!process.env.SUPABASE_URL,
-      has_SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-      has_TELEGRAM_BOT_TOKEN: !!process.env.TELEGRAM_BOT_TOKEN,
-      has_TELEGRAM_ALLOWED_USER_IDS: !!process.env.TELEGRAM_ALLOWED_USER_IDS,
-      has_GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    env_configured: {
+      SUPABASE_URL: !!process.env.SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      TELEGRAM_BOT_TOKEN: !!process.env.TELEGRAM_BOT_TOKEN,
+      TELEGRAM_ALLOWED_USER_IDS: !!process.env.TELEGRAM_ALLOWED_USER_IDS,
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
     },
   }));
 
@@ -80,22 +93,43 @@ export default async function handler(req: any, res: any) {
       });
     }
     const app = await appPromise;
-    app.server.emit('request', req, res);
+
+    // Collect request body chunks
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const payload = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+
+    // Execute through Fastify inject
+    const response = await app.inject({
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      payload,
+    });
+
+    for (const [key, val] of Object.entries(response.headers)) {
+      if (val !== undefined) {
+        res.setHeader(key, val as any);
+      }
+    }
+    res.statusCode = response.statusCode;
+    res.end(response.rawPayload);
   } catch (err: any) {
-    logger.error({ err }, 'Serverless handler execution failed');
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(
       JSON.stringify(
         {
           error: 'SERVERLESS_INITIALIZATION_ERROR',
-          message: err?.message || 'Failed to initialize serverless application',
-          missing_env_check: {
-            SUPABASE_URL: !process.env.SUPABASE_URL ? 'MISSING' : 'OK',
-            SUPABASE_SERVICE_ROLE_KEY: !process.env.SUPABASE_SERVICE_ROLE_KEY ? 'MISSING' : 'OK',
-            TELEGRAM_BOT_TOKEN: !process.env.TELEGRAM_BOT_TOKEN ? 'MISSING' : 'OK',
-            TELEGRAM_ALLOWED_USER_IDS: !process.env.TELEGRAM_ALLOWED_USER_IDS ? 'MISSING' : 'OK',
-            GEMINI_API_KEY: !process.env.GEMINI_API_KEY ? 'MISSING' : 'OK',
+          message: err?.message || 'Serverless execution error',
+          env_check: {
+            SUPABASE_URL: !process.env.SUPABASE_URL ? 'MISSING' : 'CONFIGURED',
+            SUPABASE_SERVICE_ROLE_KEY: !process.env.SUPABASE_SERVICE_ROLE_KEY ? 'MISSING' : 'CONFIGURED',
+            TELEGRAM_BOT_TOKEN: !process.env.TELEGRAM_BOT_TOKEN ? 'MISSING' : 'CONFIGURED',
+            TELEGRAM_ALLOWED_USER_IDS: !process.env.TELEGRAM_ALLOWED_USER_IDS ? 'MISSING' : 'CONFIGURED',
+            GEMINI_API_KEY: !process.env.GEMINI_API_KEY ? 'MISSING' : 'CONFIGURED',
           },
           stack: err?.stack,
         },
