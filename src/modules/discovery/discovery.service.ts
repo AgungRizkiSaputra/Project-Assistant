@@ -180,6 +180,16 @@ Format JSON yang WAJIB dihasilkan:
     reply.phaseNumber = phaseMeta.number;
     reply.phaseTitle = phaseMeta.title;
 
+    // Check if phase is mature enough to advance
+    const currentPhaseDecisions = (existingDecisions || []).filter(
+      (d: any) => d.source_reference === `Discovery Phase ${phaseMeta.number}` || d.sourceReference === `Discovery Phase ${phaseMeta.number}`
+    );
+    if ((reply.canAdvanceToNextPhase || currentPhaseDecisions.length >= 2) && !reply.assistantResponse.includes('Lanjut ke Fase')) {
+      reply.canAdvanceToNextPhase = true;
+      const nextNum = phaseMeta.number < 8 ? phaseMeta.number + 1 : 8;
+      reply.assistantResponse += `\n\n✨ **Fondasi Fase ${phaseMeta.number} (${phaseMeta.title}) sudah matang!** Anda dapat langsung menekan tombol **"Lanjut ke Fase ${nextNum}"** untuk beralih ke tahapan berikutnya, atau tetap memilih opsi di atas bila ingin memperdalam detail.`;
+    }
+
     // 6. Save AI assistant message to DB
     await (this.supabase as any).from('messages').insert({
       session_id: sessionId,

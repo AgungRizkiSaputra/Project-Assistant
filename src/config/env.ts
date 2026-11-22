@@ -32,6 +32,9 @@ const envSchema = z.object({
   // App Env
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  PORT: z.string().default('3000').transform((v) => parseInt(v, 10)),
+  HOST: z.string().default('0.0.0.0'),
+  API_AUTH_TOKEN: z.string().default('project-hub-secret-key-2026'),
 });
 
 export type Config = z.infer<typeof envSchema>;

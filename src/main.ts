@@ -11,6 +11,7 @@ import { PrdService } from './modules/prd/prd.service.js';
 import { ExportService } from './modules/export/export.service.js';
 import { AIProviderFactory } from './ai/factory.js';
 import { createTelegramBot } from './telegram/bot.js';
+import { createApiServer } from './api/server.js';
 
 async function bootstrap() {
   logger.info('Initializing Personal Product Assistant (AI Product Architect)...');
@@ -47,15 +48,41 @@ async function bootstrap() {
       validatorService
     );
 
+    // REST API Server for Mobile & Web clients
+    const apiApp = createApiServer({
+      config,
+      supabase,
+      authService,
+      ideasService,
+      projectsService,
+      discoveryService,
+      prdService,
+      exportService,
+      memoryService,
+      validatorService,
+      aiProvider,
+    });
+
+    // Start Fastify API server
+    try {
+      await apiApp.listen({ port: config.PORT, host: config.HOST });
+      logger.info({ port: config.PORT, host: config.HOST }, 'Personal Project Hub REST API listening');
+    } catch (apiErr: any) {
+      logger.error({ err: apiErr }, 'Failed to start REST API server');
+    }
+
     // Graceful stop
-    process.once('SIGINT', () => {
-      logger.info('Stopping Telegram Bot (SIGINT)...');
-      bot.stop();
-    });
-    process.once('SIGTERM', () => {
-      logger.info('Stopping Telegram Bot (SIGTERM)...');
-      bot.stop();
-    });
+    const shutdown = async (signal: string) => {
+      logger.info(`Stopping services (${signal})...`);
+      try {
+        bot.stop();
+        await apiApp.close();
+      } catch (err) {
+        logger.error({ err }, 'Error during shutdown');
+      }
+    };
+    process.once('SIGINT', () => shutdown('SIGINT'));
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
 
     logger.info('Personal Product Assistant bot starting polling...');
     await bot.start({

@@ -21,10 +21,12 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@fastify/cors": "^11.4.3",
     "@google/genai": "^2.32.0",
     "@supabase/supabase-js": "^2.118.0",
     "@types/node": "^26.6.6",
     "dotenv": "^18.0.9",
+    "fastify": "^5.12.8",
     "grammy": "^1.46.0",
     "markdown-it": "^15.0.3",
     "marked": "^18.1.2",
