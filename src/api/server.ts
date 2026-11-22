@@ -105,7 +105,7 @@ export function createApiServer(deps: ApiServerDependencies): FastifyInstance {
   app.get('/api/health', async () => {
     return {
       status: 'ok',
-      service: 'Personal Project Hub API',
+      service: 'Qoro API',
       timestamp: new Date().toISOString(),
     };
   });

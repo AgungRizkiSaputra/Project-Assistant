@@ -1,12 +1,14 @@
 {
   "version": 2,
-  "framework": null,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/_expo/(.*)", "destination": "/_expo/$1" },
     { "source": "/assets/(.*)", "destination": "/assets/$1" },
     { "source": "/favicon.ico", "destination": "/favicon.ico" },
+    { "source": "/favicon.png", "destination": "/favicon.png" },
+    { "source": "/icon.png", "destination": "/icon.png" },
+    { "source": "/manifest.json", "destination": "/manifest.json" },
     { "source": "/metadata.json", "destination": "/metadata.json" },
-    { "source": "/((?!api|_expo|assets|favicon.ico|metadata.json).*)", "destination": "/index.html" }
+    { "source": "/((?!api|_expo|assets|favicon|icon|manifest|metadata).*)", "destination": "/index.html" }
   ]
 }

@@ -22,7 +22,7 @@ async function serveIndexHtml(reply: any) {
   }
   return reply
     .type('text/html; charset=utf-8')
-    .send('<!DOCTYPE html><html><body><h3>Personal Project Hub Ready</h3></body></html>');
+    .send('<!DOCTYPE html><html><body><h3>Qoro — AI Product Architect</h3></body></html>');
 }
 
 async function bootstrapServerless(): Promise<FastifyInstance> {
@@ -42,7 +42,7 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
     if (accept.includes('text/html') || !accept.includes('application/json')) {
       return serveIndexHtml(reply);
     }
-    return { status: 'ok', service: 'Personal Project Hub API', version: '1.0.0' };
+    return { status: 'ok', service: 'Qoro API', version: '1.0.0' };
   });
 
   // Register Telegram Webhook handler for Vercel
