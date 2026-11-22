@@ -88,28 +88,13 @@ export default async function handler(req: any, res: any) {
     }
     const app = await appPromise;
 
-    // Collect request body chunks
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-    }
-    const payload = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
-
-    // Execute through Fastify inject
-    const response = await app.inject({
-      method: req.method,
-      url: req.url,
-      headers: req.headers,
-      payload,
+    // Dispatch directly to Fastify's native Node.js HTTP listener without light-my-request
+    await new Promise<void>((resolve, reject) => {
+      res.on('finish', () => resolve());
+      res.on('close', () => resolve());
+      res.on('error', (err: any) => reject(err));
+      app.server.emit('request', req, res);
     });
-
-    for (const [key, val] of Object.entries(response.headers)) {
-      if (val !== undefined) {
-        res.setHeader(key, val as any);
-      }
-    }
-    res.statusCode = response.statusCode;
-    res.end(response.rawPayload);
   } catch (err: any) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
