@@ -10,23 +10,62 @@ let appPromise: Promise<FastifyInstance> | null = null;
 async function bootstrapServerless(): Promise<FastifyInstance> {
   const { bot, apiApp } = createAssistantApp();
 
-  // Root fallback to serve index.html if routed to serverless
-  apiApp.get('/', async (_req, reply) => {
-    try {
-      const candidates = [
-        path.join(process.cwd(), 'index.html'),
-        path.join(process.cwd(), 'public', 'index.html'),
+  // Fallback handler for all frontend routes & static assets
+  apiApp.setNotFoundHandler(async (req, reply) => {
+    // If it's an API route that does not exist, return standard 404 JSON
+    if (req.url.startsWith('/api')) {
+      return reply.status(404).send({
+        error: 'NOT_FOUND',
+        message: `API route ${req.method} ${req.url} not found`,
+      });
+    }
+
+    const cleanPath = req.url.split('?')[0];
+
+    // Check if matching static file exists on disk
+    if (cleanPath !== '/' && cleanPath !== '') {
+      const staticCandidates = [
+        path.join(process.cwd(), cleanPath),
+        path.join(process.cwd(), 'public', cleanPath),
       ];
-      for (const p of candidates) {
+      for (const p of staticCandidates) {
         try {
-          const html = await fs.readFile(p, 'utf-8');
-          if (html) return reply.type('text/html').send(html);
+          const stat = await fs.stat(p);
+          if (stat.isFile()) {
+            const ext = path.extname(p).toLowerCase();
+            const mimeTypes: Record<string, string> = {
+              '.js': 'application/javascript; charset=utf-8',
+              '.css': 'text/css; charset=utf-8',
+              '.html': 'text/html; charset=utf-8',
+              '.json': 'application/json; charset=utf-8',
+              '.png': 'image/png',
+              '.jpg': 'image/jpeg',
+              '.jpeg': 'image/jpeg',
+              '.ico': 'image/x-icon',
+              '.svg': 'image/svg+xml',
+            };
+            const content = await fs.readFile(p);
+            return reply.type(mimeTypes[ext] || 'application/octet-stream').send(content);
+          }
         } catch {}
       }
-      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant Ready</h3></body></html>');
-    } catch {
-      return reply.type('text/html').send('<!DOCTYPE html><html><body><h3>Project Assistant Ready</h3></body></html>');
     }
+
+    // Default to serving index.html for all SPA frontend routes (/, /projects, /ideas, etc.)
+    const htmlCandidates = [
+      path.join(process.cwd(), 'index.html'),
+      path.join(process.cwd(), 'public', 'index.html'),
+    ];
+    for (const p of htmlCandidates) {
+      try {
+        const html = await fs.readFile(p, 'utf-8');
+        if (html) return reply.type('text/html; charset=utf-8').send(html);
+      } catch {}
+    }
+
+    return reply
+      .type('text/html; charset=utf-8')
+      .send('<!DOCTYPE html><html><body><h3>Project Assistant is Running</h3></body></html>');
   });
 
   // Register Telegram Webhook handler for Vercel
