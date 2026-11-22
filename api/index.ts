@@ -7,22 +7,24 @@ import path from 'node:path';
 
 let appPromise: Promise<FastifyInstance> | null = null;
 
-async function serveIndexHtml(reply: any) {
+async function serveStaticFile(reply: any, filename: string, contentType: string) {
   const candidates = [
-    path.join(process.cwd(), 'index.html'),
-    path.join(process.cwd(), 'public', 'index.html'),
+    path.join(process.cwd(), filename),
+    path.join(process.cwd(), 'public', filename),
   ];
   for (const p of candidates) {
     try {
-      const html = await fs.readFile(p, 'utf-8');
-      if (html) {
-        return reply.type('text/html; charset=utf-8').send(html);
+      const data = await fs.readFile(p);
+      if (data) {
+        return reply.type(contentType).send(data);
       }
     } catch {}
   }
-  return reply
-    .type('text/html; charset=utf-8')
-    .send('<!DOCTYPE html><html><body><h3>Qoro — AI Product Architect</h3></body></html>');
+  return reply.status(404).send('Not Found');
+}
+
+async function serveIndexHtml(reply: any) {
+  return serveStaticFile(reply, 'index.html', 'text/html; charset=utf-8');
 }
 
 async function bootstrapServerless(): Promise<FastifyInstance> {
@@ -35,6 +37,10 @@ async function bootstrapServerless(): Promise<FastifyInstance> {
   apiApp.get('/projects', async (_req, reply) => serveIndexHtml(reply));
   apiApp.get('/assistant', async (_req, reply) => serveIndexHtml(reply));
   apiApp.get('/spinner', async (_req, reply) => serveIndexHtml(reply));
+  apiApp.get('/manifest.json', async (_req, reply) => serveStaticFile(reply, 'manifest.json', 'application/manifest+json'));
+  apiApp.get('/icon.png', async (_req, reply) => serveStaticFile(reply, 'icon.png', 'image/png'));
+  apiApp.get('/favicon.png', async (_req, reply) => serveStaticFile(reply, 'favicon.png', 'image/png'));
+  apiApp.get('/favicon.ico', async (_req, reply) => serveStaticFile(reply, 'favicon.ico', 'image/x-icon'));
 
   // /api handler: if opened by browser, serve UI; if API client, return info
   apiApp.get('/api', async (req, reply) => {
