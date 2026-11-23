@@ -27,6 +27,9 @@ describe('Delete & Project Management Module', () => {
         }
         if (table === 'projects') {
           return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockResolvedValue({ data: [] }),
+            }),
             update: vi.fn().mockReturnValue({
               eq: vi.fn().mockReturnValue({
                 eq: vi.fn().mockResolvedValue({ error: null }),
